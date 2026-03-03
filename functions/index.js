@@ -1,6 +1,7 @@
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const { Expo } = require("expo-server-sdk");
+const fetch = require("node-fetch");
 
 admin.initializeApp();
 
@@ -608,11 +609,26 @@ exports.getStripeAccountStatus = functions.https.onCall(async (data, context) =>
 
   try {
     const account = await stripe.accounts.retrieve(userSnap.data().stripeAccountId);
-    const complete = account.charges_enabled && account.payouts_enabled;
+    console.log("Stripe account status:", JSON.stringify({
+      id: account.id,
+      charges_enabled: account.charges_enabled,
+      payouts_enabled: account.payouts_enabled,
+      details_submitted: account.details_submitted,
+      requirements: account.requirements?.currently_due,
+    }));
+    // details_submitted means the director finished the onboarding form
+    // charges_enabled/payouts_enabled may lag behind in test mode
+    const complete = account.details_submitted === true;
     if (complete && !userSnap.data().stripeOnboardingComplete) {
       await admin.firestore().collection("users").doc(userId).update({ stripeOnboardingComplete: true });
     }
-    return { connected: true, onboardingComplete: complete, chargesEnabled: account.charges_enabled, payoutsEnabled: account.payouts_enabled };
+    return {
+      connected: true,
+      onboardingComplete: complete,
+      chargesEnabled: account.charges_enabled,
+      payoutsEnabled: account.payouts_enabled,
+      detailsSubmitted: account.details_submitted,
+    };
   } catch (err) {
     console.error("Error retrieving Stripe account:", err);
     return { connected: false, onboardingComplete: false };
@@ -674,3 +690,274 @@ exports.processRefund = functions.https.onCall(async (data, context) => {
 
   return { success: true, refundId: refund.id };
 });
+
+// ─── RunSignup Race Importer ─────────────────────────────────────────────────
+
+// US states with strong trail running communities
+const TRAIL_STATES = [
+  "UT", "CO", "OR", "CA", "NC", "MT", "WA", "VA", "NY", "PA",
+  "VT", "NH", "GA", "TN", "AZ", "NM", "ID", "WY", "ME", "WV",
+];
+
+/**
+ * Strip HTML tags from a string and clean up whitespace
+ */
+function stripHtml(html) {
+  if (!html) return "";
+  return html
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 2000); // Cap at 2000 chars
+}
+
+/**
+ * Convert RunSignup date string (MM/DD/YYYY) to YYYY-MM-DD
+ */
+function formatRSDate(dateStr) {
+  if (!dateStr) return "";
+  const parts = dateStr.split("/");
+  if (parts.length === 3) {
+    return `${parts[2]}-${parts[0].padStart(2, "0")}-${parts[1].padStart(2, "0")}`;
+  }
+  return dateStr;
+}
+
+/**
+ * Fetch races from RunSignup for a single state + page
+ */
+async function fetchRunSignupRaces(state, page = 1) {
+  const startDate = new Date().toISOString().split("T")[0].replace(/-/g, "/");
+  const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0].replace(/-/g, "/");
+
+  const url = `https://runsignup.com/Rest/races?format=json&only_trail_races=T&state=${state}&start_date=${startDate}&end_date=${endDate}&results_per_page=250&page=${page}`;
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    console.error(`RunSignup API error for ${state} page ${page}: ${response.status}`);
+    return [];
+  }
+  const data = await response.json();
+  return (data.races || []).map((r) => r.race);
+}
+
+/**
+ * Fetch detailed event/distance info for a single race
+ */
+async function fetchRaceDetails(raceId) {
+  const url = `https://runsignup.com/Rest/race/${raceId}?format=json&include_events=T`;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.race || null;
+  } catch (err) {
+    console.error(`Error fetching race ${raceId} details:`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Map a RunSignup race to our Firestore trails schema
+ */
+function mapRunSignupToTrail(race, details) {
+  const events = details?.events || [];
+  const city = race.address?.city || "";
+  const state = race.address?.state || "";
+  const location = city && state ? `${city}, ${state}` : city || state || "Unknown";
+
+  // Build distances array from events
+  const distances = events
+    .filter((e) => e.event_type === "running_race" || !e.volunteer || e.volunteer === "F")
+    .map((e) => {
+      const currentPeriod = e.registration_periods?.[0];
+      const feeStr = currentPeriod?.race_fee || "$0";
+      const price = parseFloat(feeStr.replace(/[^0-9.]/g, "")) || 0;
+
+      return {
+        raceTitle: e.name || "",
+        label: e.distance || e.name || "",
+        price: price,
+        startTime: e.start_time ? e.start_time.split(" ").pop() || "" : "",
+        elevationGain: "",
+        cutoffTime: "",
+        capacity: e.participant_cap || 0,
+        terrainTechnicality: 0,
+        gpxRouteLink: "",
+      };
+    });
+
+  const distancesOffered = distances.map((d) => d.label).filter(Boolean);
+
+  // Use the lowest current price as the headline price
+  const prices = distances.map((d) => d.price).filter((p) => p > 0);
+  const headlinePrice = prices.length > 0 ? Math.min(...prices) : 0;
+
+  return {
+    name: race.name || "Unnamed Race",
+    location: location,
+    date: formatRSDate(race.next_date),
+    description: stripHtml(race.description),
+    slogan: "", // RunSignup doesn't have slogans
+    image: race.logo_url || "",
+    imageUrl: race.logo_url || "",
+    featuredImageUrl: race.logo_url || "",
+    logoUrl: race.logo_url || "",
+    distancesOffered: distancesOffered,
+    distances: distances,
+    price: headlinePrice,
+    elevation: "",
+    elevationGain: "",
+    startTime: distances[0]?.startTime || "",
+    capacity: distances[0]?.capacity || 0,
+    website: race.external_race_url || race.url || "",
+    // RunSignup-specific fields
+    source: "runsignup",
+    runsignupRaceId: race.race_id,
+    runsignupUrl: race.url || "",
+    registrationType: "external", // Opens RunSignup in browser
+    isRegistrationOpen: race.is_registration_open === "T",
+    // Visibility — show these in the app
+    isVisibleOnApp: true,
+    // Geo data — will be enriched later or from city lookup
+    latitude: null,
+    longitude: null,
+    // Timestamps
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    lastSyncedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+}
+
+/**
+ * Scheduled Cloud Function: Syncs RunSignup trail races daily at 2am CT
+ * Runs through all target states, imports new races, updates existing ones.
+ */
+exports.syncRunSignupRaces = functions
+  .runWith({ timeoutSeconds: 540, memory: "512MB" }) // 9 min timeout, extra memory
+  .pubsub.schedule("0 2 * * *") // Every day at 2:00 AM
+  .timeZone("America/Chicago")
+  .onRun(async (context) => {
+    console.log("Starting RunSignup race sync...");
+
+    const db = admin.firestore();
+    let totalImported = 0;
+    let totalUpdated = 0;
+    let totalSkipped = 0;
+
+    for (const state of TRAIL_STATES) {
+      try {
+        const races = await fetchRunSignupRaces(state);
+        console.log(`${state}: Found ${races.length} trail races`);
+
+        for (const race of races) {
+          try {
+            // Check if we already have this race
+            const existingQuery = await db
+              .collection("trails")
+              .where("runsignupRaceId", "==", race.race_id)
+              .limit(1)
+              .get();
+
+            if (!existingQuery.empty) {
+              // Update existing race (date, registration status, etc.)
+              const existingDoc = existingQuery.docs[0];
+              await existingDoc.ref.update({
+                date: formatRSDate(race.next_date),
+                isRegistrationOpen: race.is_registration_open === "T",
+                lastSyncedAt: admin.firestore.FieldValue.serverTimestamp(),
+              });
+              totalUpdated++;
+              continue;
+            }
+
+            // Fetch detailed event info for new races
+            const details = await fetchRaceDetails(race.race_id);
+            const trailData = mapRunSignupToTrail(race, details);
+
+            await db.collection("trails").add(trailData);
+            totalImported++;
+
+            // Small delay to avoid hammering RunSignup API
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          } catch (raceErr) {
+            console.error(`Error processing race ${race.race_id}:`, raceErr.message);
+            totalSkipped++;
+          }
+        }
+
+        // Small delay between states
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      } catch (stateErr) {
+        console.error(`Error processing state ${state}:`, stateErr.message);
+      }
+    }
+
+    console.log(`RunSignup sync complete: ${totalImported} imported, ${totalUpdated} updated, ${totalSkipped} skipped`);
+    return null;
+  });
+
+/**
+ * Callable function: Manually trigger a RunSignup sync (for admin use)
+ * Can optionally sync a single state for testing.
+ */
+exports.manualRunSignupSync = functions
+  .runWith({ timeoutSeconds: 540, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
+    }
+
+    // Check if admin
+    const userSnap = await admin.firestore().collection("users").doc(context.auth.uid).get();
+    if (!userSnap.exists || userSnap.data().role !== "admin") {
+      throw new functions.https.HttpsError("permission-denied", "Admin access required.");
+    }
+
+    const targetStates = data?.states || TRAIL_STATES;
+    const db = admin.firestore();
+    let totalImported = 0;
+    let totalUpdated = 0;
+
+    for (const state of targetStates) {
+      const races = await fetchRunSignupRaces(state);
+      console.log(`Manual sync — ${state}: ${races.length} races`);
+
+      for (const race of races) {
+        try {
+          const existingQuery = await db
+            .collection("trails")
+            .where("runsignupRaceId", "==", race.race_id)
+            .limit(1)
+            .get();
+
+          if (!existingQuery.empty) {
+            const existingDoc = existingQuery.docs[0];
+            await existingDoc.ref.update({
+              date: formatRSDate(race.next_date),
+              isRegistrationOpen: race.is_registration_open === "T",
+              lastSyncedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            totalUpdated++;
+            continue;
+          }
+
+          const details = await fetchRaceDetails(race.race_id);
+          const trailData = mapRunSignupToTrail(race, details);
+          await db.collection("trails").add(trailData);
+          totalImported++;
+
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        } catch (err) {
+          console.error(`Error importing race ${race.race_id}:`, err.message);
+        }
+      }
+    }
+
+    return { success: true, imported: totalImported, updated: totalUpdated };
+  });

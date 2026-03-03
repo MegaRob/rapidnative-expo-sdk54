@@ -1,4 +1,4 @@
-import { use Navigation, useRouter } from 'expo-router';
+import { useNavigation, useRouter } from 'expo-router';
 import { arrayRemove, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, Timestamp, updateDoc, where } from "firebase/firestore";
 import { ArrowLeft, Calendar, Clock, MapPin, Pin, Trophy, X } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';

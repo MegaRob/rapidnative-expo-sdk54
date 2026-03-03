@@ -241,6 +241,8 @@
       const removeEditDistance = (index) => { if (editDistances.length > 1) setEditDistances(prev => prev.filter((_, i) => i !== index)); };
       const [isBackfilling, setIsBackfilling] = useState(false);
       const [isBackfillingRequests, setIsBackfillingRequests] = useState(false);
+      const [isSyncingRunSignup, setIsSyncingRunSignup] = useState(false);
+      const [syncResult, setSyncResult] = useState(null);
       const [raceSearch, setRaceSearch] = useState("");
       const [raceGuides, setRaceGuides] = useState([]);
       const [selectedGuideId, setSelectedGuideId] = useState(null);
@@ -783,6 +785,21 @@
         }
       };
 
+      const handleRunSignupSync = async () => {
+        if (!isAdmin) return;
+        setIsSyncingRunSignup(true);
+        setSyncResult(null);
+        try {
+          const syncFn = functions.httpsCallable("manualRunSignupSync");
+          const result = await syncFn({});
+          setSyncResult(result.data);
+          alert(`RunSignup sync complete!\n${result.data.imported} new races imported\n${result.data.updated} races updated`);
+        } catch (err) {
+          alert("Sync failed: " + (err.message || err));
+        }
+        setIsSyncingRunSignup(false);
+      };
+
       const handleBackfillCoordinates = async () => {
         if (!isAdmin) return;
         setIsBackfilling(true);
@@ -1208,6 +1225,17 @@
                       }`}
                     >
                       {isBackfillingRequests ? "Backfilling..." : "Backfill Requests"}
+                    </button>
+                    <button
+                      onClick={handleRunSignupSync}
+                      disabled={isSyncingRunSignup}
+                      className={`text-xs px-3 py-2 rounded-lg ${
+                        isSyncingRunSignup
+                          ? "bg-slate-800 text-slate-500"
+                          : "bg-orange-500 text-white"
+                      }`}
+                    >
+                      {isSyncingRunSignup ? "Syncing RunSignup..." : "🔄 Sync RunSignup Races"}
                     </button>
                   </div>
                 </div>

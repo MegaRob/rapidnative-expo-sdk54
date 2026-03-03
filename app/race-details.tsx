@@ -4,7 +4,7 @@ import { arrayUnion, collection, doc, getDoc, getDocs, onSnapshot, query, setDoc
 import { ArrowLeft, Calendar, Clock, Heart, MapPin, Mountain, Share2 } from 'lucide-react-native';
 import { cssInterop } from 'nativewind';
 import React, { useEffect, useState } from 'react';
-import { Alert, Dimensions, Image, Pressable, ScrollView, Share, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Dimensions, Image, Linking, Pressable, ScrollView, Share, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useBlockedUsers } from '../hooks/useBlockedUsers';
 import { auth, db } from '../src/firebaseConfig';
@@ -902,7 +902,21 @@ export default function RaceDetailsScreen() {
       {/* Action Buttons */}
       <View className="p-6 pt-0">
         {/* Registration Button */}
-        {!isRegistered && (
+        {!isRegistered && raceData_merged?.source === 'runsignup' && raceData_merged?.runsignupUrl ? (
+          /* External race — open RunSignup in browser */
+          <TouchableOpacity
+            onPress={() => {
+              Linking.openURL(raceData_merged.runsignupUrl);
+            }}
+            className="bg-orange-500 py-4 rounded-2xl items-center mb-3"
+            activeOpacity={0.8}
+          >
+            <Text className="text-white text-lg font-bold">
+              Register on RunSignup →
+            </Text>
+          </TouchableOpacity>
+        ) : !isRegistered && (
+          /* Native race — in-app Stripe registration */
           <TouchableOpacity
             onPress={() => {
               const distance = selectedDistance || distancesOffered[0] || raceData_merged?.distance;
