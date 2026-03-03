@@ -279,6 +279,20 @@ service cloud.firestore {
         request.auth.uid == resource.data.userId;
     }
     // --- END COMPLETED RACES COLLECTION ---
+
+    // --- PAYMENTS COLLECTION ---
+    match /payments/{paymentId} {
+      // Only Cloud Functions (admin SDK) create payments
+      // Users can read their own payments; admins/directors can read relevant ones
+      allow read: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.directorId == request.auth.uid ||
+        isAdmin()
+      );
+      // No client-side writes — only Cloud Functions manage payments
+      allow write: if false;
+    }
+    // --- END PAYMENTS COLLECTION ---
     
   }
 }

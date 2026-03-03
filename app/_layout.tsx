@@ -8,6 +8,7 @@ import * as Notifications from "expo-notifications";
 import { StatusBar } from "expo-status-bar";
 import "react-native-reanimated";
 import { KeyboardProvider } from "react-native-keyboard-controller";
+import { StripeProvider } from "@stripe/stripe-react-native";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { GluestackUIProvider } from "@/components/ui/gluestack-ui-provider";
 import "@/global.css";
@@ -144,7 +145,15 @@ export default function RootLayout() {
     );
   }
 
+  // Replace with your Stripe publishable key (pk_live_... or pk_test_...)
+  // You get this from https://dashboard.stripe.com/apikeys
+  const STRIPE_PUBLISHABLE_KEY = "pk_test_51T6yYLPSSNYdXAll0E6iEsq9OI01LzgHHS77wQn8g7yr5naj7IwU1jxz3YRuHhMqhR2YFzWsoc1mDqW6ntaVxlBD00V0tvJ2op";
+
   return (
+    <StripeProvider
+      publishableKey={STRIPE_PUBLISHABLE_KEY}
+      merchantIdentifier="merchant.com.beartoe.trailmatch"
+    >
     <KeyboardProvider>
     <GluestackUIProvider mode="dark">
       <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
@@ -250,5 +259,6 @@ export default function RootLayout() {
       </ThemeProvider>
     </GluestackUIProvider>
     </KeyboardProvider>
+    </StripeProvider>
   );
 }

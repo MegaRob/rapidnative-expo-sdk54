@@ -11,7 +11,9 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { useRouter } from 'expo-router';
+import { useStripe } from '@stripe/stripe-react-native';
 import { Check, CreditCard, HeartPulse, ShieldCheck, Shirt, Trophy, User, X } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import {
@@ -25,7 +27,7 @@ import {
 } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { auth, db } from '../../src/firebaseConfig';
+import { auth, db, app } from '../../src/firebaseConfig';
 
 // App ID from firebaseConfig
 const APP_ID = '1:1048323489461:web:e3c514fcf0d7748ef848fc';
@@ -84,6 +86,8 @@ export default function RegistrationForm({
 }: RegistrationFormProps) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { initPaymentSheet, presentPaymentSheet } = useStripe();
+  const functions = getFunctions(app);
   // Resolve race data from either prop name
   const resolvedRace = race || trail;
   const [formData, setFormData] = useState<FormData>({
@@ -268,25 +272,158 @@ export default function RegistrationForm({
     }
   };
 
-  // Handle form submission
-  const handleSubmit = async () => {
-    if (!validateForm()) {
-      return;
+  // ─── Complete the registration in Firestore (called after payment or for free races) ───
+  const completeRegistration = async (priceValue: number, paymentIntentId?: string) => {
+    const raceId = resolvedRace.id || resolvedRace.trailId || '';
+    const startTime = resolvedRace.startTime || resolvedRace.start_time || resolvedRace.start || '';
+    const user = auth.currentUser!;
+
+    const fullName = `${formData.firstName.trim()} ${formData.lastName.trim()}`.trim();
+    const bibNumber = generateBibNumber();
+    const registeredAt = Timestamp.now();
+
+    const registrationData = {
+      userId: user.uid,
+      trailId: raceId,
+      raceName: resolvedRace.name || 'Unknown Race',
+      distance: selectedDistance || resolvedRace.distancesOffered?.[0] || resolvedRace.distance || 'Unknown',
+      pricePaid: priceValue,
+      firstName: formData.firstName.trim(),
+      lastName: formData.lastName.trim(),
+      fullName: fullName,
+      email: formData.email.trim().toLowerCase(),
+      phone: formData.phone.replace(/\D/g, ''),
+      shirtSize: formData.shirtSize,
+      bibNumber: bibNumber,
+      emergencyContact: {
+        name: formData.emergencyContactName.trim(),
+        phone: formData.emergencyContactPhone.replace(/\D/g, ''),
+      },
+      status: 'confirmed',
+      paymentIntentId: paymentIntentId || null,
+      timestamp: registeredAt,
+      createdAt: registeredAt,
+    };
+
+    // 1. Detailed registration in artifacts
+    const registrationId = `${Date.now()}_${user.uid}`;
+    const registrationRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'registrations', registrationId);
+    await setDoc(registrationRef, registrationData);
+
+    // 2. Simple registration in registrations collection
+    const distanceLabel = selectedDistance || resolvedRace.distancesOffered?.[0] || resolvedRace.distance || '';
+    const simpleRegistrationRef = doc(collection(db, 'registrations'));
+    await setDoc(simpleRegistrationRef, {
+      userId: user.uid,
+      trailId: raceId,
+      registeredAt: registeredAt,
+      firstName: formData.firstName.trim(),
+      lastName: formData.lastName.trim(),
+      fullName: fullName,
+      bibNumber: bibNumber,
+      shirtSize: formData.shirtSize,
+      startTime: startTime || '',
+      distance: distanceLabel,
+    });
+
+    // Remove from matches (they're now registered)
+    if (raceId) {
+      const matchesQuery = query(
+        collection(db, 'matches'),
+        where('userId', '==', user.uid),
+        where('trailId', '==', raceId)
+      );
+      const matchesSnapshot = await getDocs(matchesQuery);
+      for (const matchDoc of matchesSnapshot.docs) {
+        await deleteDoc(matchDoc.ref);
+      }
+      await updateDoc(doc(db, 'users', user.uid), {
+        matchedTrails: arrayRemove(raceId),
+      });
     }
+
+    // Confirm payment in our records if applicable
+    if (paymentIntentId) {
+      try {
+        const confirmPaymentFn = httpsCallable(functions, 'confirmPayment');
+        await confirmPaymentFn({ paymentIntentId });
+      } catch (e) {
+        console.warn('Could not confirm payment record:', e);
+      }
+    }
+
+    onRegistered?.({
+      raceId, registrationId, simpleRegistrationId: simpleRegistrationRef.id,
+      bibNumber, shirtSize: formData.shirtSize, startTime: startTime || '',
+      firstName: formData.firstName.trim(), lastName: formData.lastName.trim(),
+      fullName, registeredAt,
+    });
+
+    // Save/update registration info
+    const userDocSnap = await getDoc(doc(db, 'users', user.uid));
+    const hasSavedInfo = userDocSnap.exists() && userDocSnap.data()?.savedRegistrationInfo;
+
+    const navigateToConfirmation = () => {
+      setIsProcessing(false);
+      setShowSuccess(false);
+      onClose();
+      router.push({
+        pathname: '/registration-confirmation',
+        params: {
+          trailId: resolvedRace.id || resolvedRace.trailId || '',
+          raceName: resolvedRace.name || 'Race',
+          distance: selectedDistance || resolvedRace.distancesOffered?.[0] || resolvedRace.distance || 'Unknown',
+          location: resolvedRace.location || '',
+          date: resolvedRace.date || '',
+          price: priceValue.toString(),
+          simpleRegistrationId: simpleRegistrationRef.id,
+          bibNumber,
+          shirtSize: formData.shirtSize,
+          startTime: startTime || '',
+        },
+      });
+    };
+
+    const savedRegInfo = {
+      phone: formData.phone.replace(/\D/g, ''),
+      emergencyContactName: formData.emergencyContactName.trim(),
+      emergencyContactPhone: formData.emergencyContactPhone.replace(/\D/g, ''),
+      shirtSize: formData.shirtSize,
+    };
+
+    if (!hasSavedInfo) {
+      setIsProcessing(false);
+      Alert.alert(
+        'Save Registration Info?',
+        'Would you like to save your details so future registrations auto-fill for you?',
+        [
+          { text: 'No Thanks', style: 'cancel', onPress: navigateToConfirmation },
+          {
+            text: 'Save',
+            onPress: async () => {
+              try { await updateDoc(doc(db, 'users', user.uid), { savedRegistrationInfo: savedRegInfo }); } catch (e) { console.error('Error saving:', e); }
+              navigateToConfirmation();
+            },
+          },
+        ]
+      );
+    } else {
+      try { await updateDoc(doc(db, 'users', user.uid), { savedRegistrationInfo: savedRegInfo }); } catch (e) { console.error('Error updating:', e); }
+      navigateToConfirmation();
+    }
+  };
+
+  // ─── Handle form submission ────────────────────────────────────────────────
+  const handleSubmit = async () => {
+    if (!validateForm()) return;
 
     if (!resolvedRace) {
       Alert.alert('Error', 'Race data is missing. Please try again.');
       return;
     }
 
-    // Use race price for record-keeping, but do not require payment right now
     const priceValue = resolvedRace?.price ? parseFloat(String(resolvedRace.price)) || 0 : 0;
     const raceId = resolvedRace.id || resolvedRace.trailId || '';
-    const startTime =
-      resolvedRace.startTime ||
-      resolvedRace.start_time ||
-      resolvedRace.start ||
-      '';
 
     const user = auth.currentUser;
     if (!user) {
@@ -294,6 +431,7 @@ export default function RegistrationForm({
       return;
     }
 
+    // Check for duplicate registration
     if (raceId) {
       const existingQuery = query(
         collection(db, 'registrations'),
@@ -310,166 +448,86 @@ export default function RegistrationForm({
     setIsProcessing(true);
 
     try {
-      // For now, skip payment processing and register immediately
+      // Get the price for the selected distance
+      const distancesArray = Array.isArray(resolvedRace?.distances) ? resolvedRace.distances : [];
+      const selectedDistData = selectedDistance
+        ? distancesArray.find((d: any) => d.label === selectedDistance)
+        : distancesArray[0];
+      const actualPrice = selectedDistData?.price
+        ? parseFloat(String(selectedDistData.price)) || 0
+        : priceValue;
 
-      const fullName = `${formData.firstName.trim()} ${formData.lastName.trim()}`.trim();
-      const bibNumber = generateBibNumber();
-
-      // Create registration document
-      const registeredAt = Timestamp.now();
-      const registrationData = {
-        userId: user.uid,
-        trailId: raceId,
-        raceName: resolvedRace.name || 'Unknown Race',
-        distance: selectedDistance || resolvedRace.distancesOffered?.[0] || resolvedRace.distance || 'Unknown',
-        pricePaid: priceValue,
-        firstName: formData.firstName.trim(),
-        lastName: formData.lastName.trim(),
-        fullName: fullName,
-        email: formData.email.trim().toLowerCase(),
-        phone: formData.phone.replace(/\D/g, ''),
-        shirtSize: formData.shirtSize,
-        bibNumber: bibNumber,
-        emergencyContact: {
-          name: formData.emergencyContactName.trim(),
-          phone: formData.emergencyContactPhone.replace(/\D/g, ''),
-        },
-        status: 'confirmed',
-        timestamp: registeredAt,
-        createdAt: registeredAt,
-      };
-
-      // Save to Firestore in two places:
-      // 1. Detailed registration in artifacts (for admin/race director use)
-      const registrationId = `${Date.now()}_${user.uid}`;
-      const registrationRef = doc(
-        db,
-        'artifacts',
-        APP_ID,
-        'public',
-        'data',
-        'registrations',
-        registrationId
-      );
-      await setDoc(registrationRef, registrationData);
-
-      // 2. Simple registration in registrations collection (for user's registered races screen)
-      const distanceLabel = selectedDistance || resolvedRace.distancesOffered?.[0] || resolvedRace.distance || '';
-      const simpleRegistrationRef = doc(collection(db, 'registrations'));
-      await setDoc(simpleRegistrationRef, {
-        userId: user.uid,
-        trailId: raceId,
-        registeredAt: registeredAt,
-        firstName: formData.firstName.trim(),
-        lastName: formData.lastName.trim(),
-        fullName: fullName,
-        bibNumber: bibNumber,
-        shirtSize: formData.shirtSize,
-        startTime: startTime || '',
-        distance: distanceLabel,
-      });
-
-      if (raceId) {
-        const matchesQuery = query(
-          collection(db, 'matches'),
-          where('userId', '==', user.uid),
-          where('trailId', '==', raceId)
-        );
-        const matchesSnapshot = await getDocs(matchesQuery);
-        for (const matchDoc of matchesSnapshot.docs) {
-          await deleteDoc(matchDoc.ref);
-        }
-
-        await updateDoc(doc(db, 'users', user.uid), {
-          matchedTrails: arrayRemove(raceId),
-        });
+      // ── FREE RACE: Register immediately ──────────────────────────────────
+      if (actualPrice <= 0) {
+        await completeRegistration(0);
+        return;
       }
 
-      onRegistered?.({
-        raceId: raceId,
-        registrationId: registrationId,
-        simpleRegistrationId: simpleRegistrationRef.id,
-        bibNumber: bibNumber,
-        shirtSize: formData.shirtSize,
-        startTime: startTime || '',
-        firstName: formData.firstName.trim(),
-        lastName: formData.lastName.trim(),
-        fullName: fullName,
-        registeredAt: registeredAt,
-      });
-
-      // Check if user has saved registration info; if not, prompt to save
-      const userDocSnap = await getDoc(doc(db, 'users', user.uid));
-      const hasSavedInfo = userDocSnap.exists() && userDocSnap.data()?.savedRegistrationInfo;
-
-      const navigateToConfirmation = () => {
-        setIsProcessing(false);
-        setShowSuccess(false);
-        onClose();
-        router.push({
-          pathname: '/registration-confirmation',
-          params: {
-            trailId: resolvedRace.id || resolvedRace.trailId || '',
-            raceName: resolvedRace.name || 'Race',
-            distance: selectedDistance || resolvedRace.distancesOffered?.[0] || resolvedRace.distance || 'Unknown',
-            location: resolvedRace.location || '',
-            date: resolvedRace.date || '',
-            price: priceValue.toString(),
-            simpleRegistrationId: simpleRegistrationRef.id,
-            bibNumber: bibNumber,
-            shirtSize: formData.shirtSize,
-            startTime: startTime || '',
-          },
+      // ── PAID RACE: Use Stripe Payment Sheet ──────────────────────────────
+      try {
+        // 1. Create PaymentIntent via Cloud Function
+        const createPaymentIntentFn = httpsCallable(functions, 'createPaymentIntent');
+        const result = await createPaymentIntentFn({
+          trailId: raceId,
+          distance: selectedDistance || '',
+          amount: actualPrice,
         });
-      };
+        const { clientSecret, ephemeralKey, customerId, paymentIntentId } = result.data as any;
 
-      if (!hasSavedInfo) {
-        // First-time registration — ask if they want to save info
-        setIsProcessing(false);
-        Alert.alert(
-          'Save Registration Info?',
-          'Would you like to save your details (phone, emergency contact, shirt size) so future registrations auto-fill for you?',
-          [
-            {
-              text: 'No Thanks',
-              style: 'cancel',
-              onPress: navigateToConfirmation,
-            },
-            {
-              text: 'Save',
-              onPress: async () => {
-                try {
-                  await updateDoc(doc(db, 'users', user.uid), {
-                    savedRegistrationInfo: {
-                      phone: formData.phone.replace(/\D/g, ''),
-                      emergencyContactName: formData.emergencyContactName.trim(),
-                      emergencyContactPhone: formData.emergencyContactPhone.replace(/\D/g, ''),
-                      shirtSize: formData.shirtSize,
-                    },
-                  });
-                } catch (saveError) {
-                  console.error('Error saving registration info:', saveError);
-                }
-                navigateToConfirmation();
-              },
-            },
-          ]
-        );
-      } else {
-        // Already has saved info — update it silently and navigate
-        try {
-          await updateDoc(doc(db, 'users', user.uid), {
-            savedRegistrationInfo: {
-              phone: formData.phone.replace(/\D/g, ''),
-              emergencyContactName: formData.emergencyContactName.trim(),
-              emergencyContactPhone: formData.emergencyContactPhone.replace(/\D/g, ''),
-              shirtSize: formData.shirtSize,
-            },
-          });
-        } catch (saveError) {
-          console.error('Error updating saved registration info:', saveError);
+        // 2. Initialize the Payment Sheet
+        const { error: initError } = await initPaymentSheet({
+          paymentIntentClientSecret: clientSecret,
+          customerEphemeralKeySecret: ephemeralKey,
+          customerId: customerId,
+          merchantDisplayName: 'TrailMatch',
+          allowsDelayedPaymentMethods: false,
+          style: 'alwaysDark',
+        });
+
+        if (initError) {
+          console.error('Payment sheet init error:', initError);
+          Alert.alert('Payment Error', 'Could not initialize payment. Please try again.');
+          setIsProcessing(false);
+          return;
         }
-        navigateToConfirmation();
+
+        // 3. Present the Payment Sheet to the user
+        const { error: presentError } = await presentPaymentSheet();
+
+        if (presentError) {
+          if (presentError.code === 'Canceled') {
+            // User cancelled — not an error
+            setIsProcessing(false);
+            return;
+          }
+          console.error('Payment sheet error:', presentError);
+          Alert.alert('Payment Failed', presentError.message || 'Payment could not be completed.');
+          setIsProcessing(false);
+          return;
+        }
+
+        // 4. Payment succeeded! Complete the registration
+        await completeRegistration(actualPrice, paymentIntentId);
+
+      } catch (stripeError: any) {
+        console.error('Stripe payment error:', stripeError);
+        setIsProcessing(false);
+
+        // Provide user-friendly error messages
+        const errorMsg = stripeError?.message || '';
+        if (errorMsg.includes('not configured')) {
+          Alert.alert(
+            'Payment Not Available',
+            'Online payments are not yet set up for this race. Please contact the race director for registration.',
+            [{ text: 'OK' }]
+          );
+        } else {
+          Alert.alert(
+            'Payment Error',
+            'There was an issue processing your payment. Please try again.',
+            [{ text: 'OK' }]
+          );
+        }
       }
     } catch (error: any) {
       console.error('Registration error:', error);

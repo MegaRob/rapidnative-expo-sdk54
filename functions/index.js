@@ -6,6 +6,14 @@ admin.initializeApp();
 
 const expo = new Expo();
 
+// ─── Stripe Setup ────────────────────────────────────────────────────────────
+// Configure via functions/.env file:
+//   STRIPE_SECRET_KEY=sk_live_...
+//   PLATFORM_FEE_PERCENT=5
+const stripeSecretKey = process.env.STRIPE_SECRET_KEY || "";
+const PLATFORM_FEE_PERCENT = parseFloat(process.env.PLATFORM_FEE_PERCENT || "5");
+const stripe = stripeSecretKey ? require("stripe")(stripeSecretKey) : null;
+
 function generateTempPassword(length = 12) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
   let result = "";
@@ -415,3 +423,254 @@ exports.onChatInvite = functions.firestore
 
     return null;
   });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STRIPE PAYMENT FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Create Payment Intent for race registration ─────────────────────────────
+exports.createPaymentIntent = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
+  }
+  if (!stripe) {
+    throw new functions.https.HttpsError("failed-precondition", "Stripe is not configured. Set stripe.secret_key in Firebase Functions config.");
+  }
+
+  const { trailId, distance, amount } = data;
+
+  if (!trailId || !amount || amount <= 0) {
+    throw new functions.https.HttpsError("invalid-argument", "trailId and a positive amount are required.");
+  }
+
+  const userId = context.auth.uid;
+  const amountInCents = Math.round(amount * 100);
+
+  const trailSnap = await admin.firestore().collection("trails").doc(trailId).get();
+  if (!trailSnap.exists) {
+    throw new functions.https.HttpsError("not-found", "Race not found.");
+  }
+
+  const trailData = trailSnap.data();
+  const directorId = trailData.directorId;
+
+  let stripeAccountId = null;
+  if (directorId) {
+    const directorSnap = await admin.firestore().collection("users").doc(directorId).get();
+    if (directorSnap.exists) {
+      stripeAccountId = directorSnap.data().stripeAccountId || null;
+    }
+  }
+
+  const userSnap = await admin.firestore().collection("users").doc(userId).get();
+  const userData = userSnap.exists ? userSnap.data() : {};
+  let stripeCustomerId = userData.stripeCustomerId;
+
+  if (!stripeCustomerId) {
+    const customer = await stripe.customers.create({
+      email: userData.email || context.auth.token.email || "",
+      metadata: { firebaseUid: userId },
+    });
+    stripeCustomerId = customer.id;
+    await admin.firestore().collection("users").doc(userId).update({ stripeCustomerId: customer.id });
+  }
+
+  const ephemeralKey = await stripe.ephemeralKeys.create(
+    { customer: stripeCustomerId },
+    { apiVersion: "2024-12-18.acacia" }
+  );
+
+  const paymentIntentParams = {
+    amount: amountInCents,
+    currency: "usd",
+    customer: stripeCustomerId,
+    metadata: { trailId, userId, distance: distance || "", raceName: trailData.name || "" },
+  };
+
+  if (stripeAccountId) {
+    const platformFee = Math.round(amountInCents * (PLATFORM_FEE_PERCENT / 100));
+    paymentIntentParams.application_fee_amount = platformFee;
+    paymentIntentParams.transfer_data = { destination: stripeAccountId };
+  }
+
+  const paymentIntent = await stripe.paymentIntents.create(paymentIntentParams);
+
+  await admin.firestore().collection("payments").add({
+    userId, trailId, distance: distance || "", raceName: trailData.name || "",
+    amountCents: amountInCents,
+    platformFeeCents: stripeAccountId ? Math.round(amountInCents * (PLATFORM_FEE_PERCENT / 100)) : amountInCents,
+    directorId: directorId || null,
+    stripePaymentIntentId: paymentIntent.id,
+    status: "pending",
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  return {
+    clientSecret: paymentIntent.client_secret,
+    ephemeralKey: ephemeralKey.secret,
+    customerId: stripeCustomerId,
+    paymentIntentId: paymentIntent.id,
+  };
+});
+
+// ─── Confirm Payment ─────────────────────────────────────────────────────────
+exports.confirmPayment = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
+  }
+  const { paymentIntentId } = data;
+  if (!paymentIntentId) {
+    throw new functions.https.HttpsError("invalid-argument", "paymentIntentId is required.");
+  }
+  const q = await admin.firestore().collection("payments").where("stripePaymentIntentId", "==", paymentIntentId).limit(1).get();
+  if (!q.empty) {
+    await q.docs[0].ref.update({ status: "succeeded", completedAt: admin.firestore.FieldValue.serverTimestamp() });
+  }
+  return { success: true };
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STRIPE CONNECT (Race Directors)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+exports.createStripeConnectAccount = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
+  if (!stripe) throw new functions.https.HttpsError("failed-precondition", "Stripe not configured.");
+
+  const userId = context.auth.uid;
+  const userEmail = context.auth.token.email || "";
+
+  const userSnap = await admin.firestore().collection("users").doc(userId).get();
+  if (userSnap.exists && userSnap.data().stripeAccountId) {
+    throw new functions.https.HttpsError("already-exists", "Stripe account already connected.");
+  }
+
+  const account = await stripe.accounts.create({
+    type: "express",
+    email: userEmail,
+    capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
+    metadata: { firebaseUid: userId },
+  });
+
+  await admin.firestore().collection("users").doc(userId).update({
+    stripeAccountId: account.id,
+    stripeOnboardingComplete: false,
+  });
+
+  return { accountId: account.id };
+});
+
+exports.getStripeConnectOnboardingLink = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
+  if (!stripe) throw new functions.https.HttpsError("failed-precondition", "Stripe not configured.");
+
+  const userId = context.auth.uid;
+  const { returnUrl, refreshUrl } = data;
+
+  const userSnap = await admin.firestore().collection("users").doc(userId).get();
+  if (!userSnap.exists || !userSnap.data().stripeAccountId) {
+    throw new functions.https.HttpsError("not-found", "No Stripe account. Create one first.");
+  }
+
+  const accountLink = await stripe.accountLinks.create({
+    account: userSnap.data().stripeAccountId,
+    refresh_url: refreshUrl || "https://trailmatch-49203553-49000.web.app/stripe-refresh",
+    return_url: returnUrl || "https://trailmatch-49203553-49000.web.app/stripe-return",
+    type: "account_onboarding",
+  });
+
+  return { url: accountLink.url };
+});
+
+exports.getStripeDashboardLink = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
+  if (!stripe) throw new functions.https.HttpsError("failed-precondition", "Stripe not configured.");
+
+  const userId = context.auth.uid;
+  const userSnap = await admin.firestore().collection("users").doc(userId).get();
+  if (!userSnap.exists || !userSnap.data().stripeAccountId) {
+    throw new functions.https.HttpsError("not-found", "No Stripe account found.");
+  }
+
+  const loginLink = await stripe.accounts.createLoginLink(userSnap.data().stripeAccountId);
+  return { url: loginLink.url };
+});
+
+exports.getStripeAccountStatus = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
+  if (!stripe) throw new functions.https.HttpsError("failed-precondition", "Stripe not configured.");
+
+  const userId = context.auth.uid;
+  const userSnap = await admin.firestore().collection("users").doc(userId).get();
+  if (!userSnap.exists || !userSnap.data().stripeAccountId) {
+    return { connected: false, onboardingComplete: false };
+  }
+
+  try {
+    const account = await stripe.accounts.retrieve(userSnap.data().stripeAccountId);
+    const complete = account.charges_enabled && account.payouts_enabled;
+    if (complete && !userSnap.data().stripeOnboardingComplete) {
+      await admin.firestore().collection("users").doc(userId).update({ stripeOnboardingComplete: true });
+    }
+    return { connected: true, onboardingComplete: complete, chargesEnabled: account.charges_enabled, payoutsEnabled: account.payouts_enabled };
+  } catch (err) {
+    console.error("Error retrieving Stripe account:", err);
+    return { connected: false, onboardingComplete: false };
+  }
+});
+
+exports.getDirectorEarnings = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
+
+  const userId = context.auth.uid;
+  const q = await admin.firestore().collection("payments").where("directorId", "==", userId).where("status", "==", "succeeded").get();
+
+  let totalRevenue = 0, totalFees = 0, totalCount = 0;
+  const raceBreakdown = {};
+
+  q.forEach((d) => {
+    const p = d.data();
+    totalRevenue += p.amountCents || 0;
+    totalFees += p.platformFeeCents || 0;
+    totalCount += 1;
+    const rn = p.raceName || "Unknown";
+    if (!raceBreakdown[rn]) raceBreakdown[rn] = { revenue: 0, fees: 0, count: 0 };
+    raceBreakdown[rn].revenue += p.amountCents || 0;
+    raceBreakdown[rn].fees += p.platformFeeCents || 0;
+    raceBreakdown[rn].count += 1;
+  });
+
+  return { totalRevenueCents: totalRevenue, totalPlatformFeesCents: totalFees, totalNetEarningsCents: totalRevenue - totalFees, totalRegistrations: totalCount, raceBreakdown, platformFeePercent: PLATFORM_FEE_PERCENT };
+});
+
+exports.processRefund = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
+  if (!stripe) throw new functions.https.HttpsError("failed-precondition", "Stripe not configured.");
+
+  const { paymentIntentId, reason } = data;
+  if (!paymentIntentId) throw new functions.https.HttpsError("invalid-argument", "paymentIntentId required.");
+
+  const userId = context.auth.uid;
+  const userSnap = await admin.firestore().collection("users").doc(userId).get();
+  const userRole = userSnap.exists ? userSnap.data().role : null;
+
+  const q = await admin.firestore().collection("payments").where("stripePaymentIntentId", "==", paymentIntentId).limit(1).get();
+  if (q.empty) throw new functions.https.HttpsError("not-found", "Payment not found.");
+
+  const paymentDoc = q.docs[0];
+  const pd = paymentDoc.data();
+
+  if (pd.userId !== userId && pd.directorId !== userId && userRole !== "admin") {
+    throw new functions.https.HttpsError("permission-denied", "Not authorized.");
+  }
+
+  const refund = await stripe.refunds.create({ payment_intent: paymentIntentId, reason: reason || "requested_by_customer" });
+
+  await paymentDoc.ref.update({
+    status: "refunded", refundId: refund.id,
+    refundedAt: admin.firestore.FieldValue.serverTimestamp(),
+    refundReason: reason || "requested_by_customer",
+  });
+
+  return { success: true, refundId: refund.id };
+});

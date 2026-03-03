@@ -48,6 +48,7 @@ app-example
 
 # Functions
 functions/node_modules/
+functions/.env
 
 # Misc
 InternalBytecode.js

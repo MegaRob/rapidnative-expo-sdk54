@@ -53,6 +53,13 @@
           "color": "#10b981",
           "defaultChannel": "chat"
         }
+      ],
+      [
+        "@stripe/stripe-react-native",
+        {
+          "merchantIdentifier": "merchant.com.beartoe.trailmatch",
+          "enableGooglePay": true
+        }
       ]
     ],
     "experiments": {

@@ -1030,6 +1030,7 @@
                 { id: "races", label: "All Races" },
                 { id: "guides", label: "Race Guides" },
                 { id: "add", label: "Add Race" },
+                { id: "payments", label: "💳 Payments" },
               ].map((item) => (
         <button 
                   key={item.id}
@@ -2066,8 +2067,66 @@
         </button>
     </div>
             )}
+
+            {tab === "payments" && (
+              <div className="glass p-6 rounded-2xl max-w-5xl mx-auto space-y-6">
+                <h3 className="text-lg font-semibold text-emerald-400 mb-2">💳 Payment Overview</h3>
+                <p className="text-slate-400 text-sm">View all payments processed through Stripe Connect.</p>
+
+                <div className="bg-slate-950 rounded-lg p-4 text-sm text-slate-300 space-y-2">
+                  <p><strong className="text-emerald-400">Platform Fee:</strong> Configured via Firebase Functions config (<code>stripe.platform_fee_percent</code>). Default: 5%</p>
+                  <p><strong className="text-emerald-400">Payment Flow:</strong> Runner pays → Stripe splits payment → Director receives (amount - platform fee) → Platform receives fee</p>
+                  <p><strong className="text-emerald-400">Stripe Dashboard:</strong> <a href="https://dashboard.stripe.com" target="_blank" className="text-emerald-400 underline">Open Stripe Dashboard →</a></p>
+                </div>
+
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-300 mb-3">Recent Payments</h4>
+                  <PaymentsList />
+                </div>
+              </div>
+            )}
           </main>
   </div>
+      );
+    }
+
+    function PaymentsList() {
+      const [payments, setPayments] = useState([]);
+      const [loading, setLoading] = useState(true);
+
+      useEffect(() => {
+        const adminApp = firebase.apps.find((app) => app.name === "admin-portal")
+          ? firebase.app("admin-portal")
+          : null;
+        if (!adminApp) return;
+        const adb = adminApp.firestore();
+        const unsub = adb.collection("payments").orderBy("createdAt", "desc").limit(100).onSnapshot(snap => {
+          setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+          setLoading(false);
+        });
+        return () => unsub();
+      }, []);
+
+      if (loading) return <p className="text-slate-400 text-sm">Loading payments...</p>;
+      if (payments.length === 0) return <p className="text-slate-400 text-sm">No payments yet. Payments will appear here once runners start registering for paid races.</p>;
+
+      return (
+        <div className="space-y-2">
+          {payments.map(p => (
+            <div key={p.id} className="flex items-center justify-between bg-slate-950 rounded-lg px-4 py-3">
+              <div>
+                <p className="text-slate-100 font-medium">{p.raceName || "Unknown Race"}</p>
+                <p className="text-xs text-slate-400">{p.distance || ""} · {p.userId?.slice(0,8)}...</p>
+              </div>
+              <div className="text-right">
+                <p className={"font-semibold " + (p.status === "succeeded" ? "text-emerald-400" : p.status === "refunded" ? "text-red-400" : "text-yellow-400")}>
+                  ${((p.amountCents || 0) / 100).toFixed(2)}
+                </p>
+                <p className="text-xs text-slate-400">{p.status}</p>
+              </div>
+            </div>
+          ))}
+        </div>
       );
     }
 
