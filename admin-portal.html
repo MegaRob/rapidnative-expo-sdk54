@@ -1,0 +1,2078 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TrailMatch Admin Portal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            emerald: {
+              500: '#10b981',
+            },
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    .glass {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid rgba(16, 185, 129, 0.12);
+      box-shadow: 0 10px 30px rgba(2, 6, 23, 0.7);
+      backdrop-filter: blur(16px);
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100">
+  <div id="root" class="min-h-screen"></div>
+
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-functions-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
+
+  <script type="text/babel">
+    const { useEffect, useState, useRef, useCallback } = React;
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyAcKYEhZyUgwUV58uWEVbI4Gwkn65miHt4",
+      authDomain: "trailmatch-49203553-49000.firebaseapp.com",
+      projectId: "trailmatch-49203553-49000",
+      storageBucket: "trailmatch-49203553-49000.firebasestorage.app",
+      messagingSenderId: "1048323489461",
+      appId: "1:1048323489461:web:e3c514fcf0d7748ef848fc"
+    };
+
+    const adminApp = firebase.apps.find((app) => app.name === "admin-portal")
+      ? firebase.app("admin-portal")
+      : firebase.initializeApp(firebaseConfig, "admin-portal");
+
+    const auth = adminApp.auth();
+    const db = adminApp.firestore();
+    const functions = adminApp.functions();
+    const storage = adminApp.storage();
+
+    // ─── Image upload helper (uploads to Firebase Storage, returns download URL) ──
+    async function uploadImageToStorage(file, onProgress) {
+      const uniqueName = Date.now() + '_' + Math.random().toString(36).slice(2) + '_' + file.name.replace(/[^a-zA-Z0-9._-]/g, '');
+      const fileRef = storage.ref('race_uploads/' + uniqueName);
+      return new Promise((resolve, reject) => {
+        const task = fileRef.put(file);
+        task.on('state_changed',
+          (snap) => {
+            const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
+            if (onProgress) onProgress(pct);
+          },
+          (err) => reject(err),
+          async () => {
+            const url = await task.snapshot.ref.getDownloadURL();
+            resolve(url);
+          }
+        );
+      });
+    }
+
+    function formatDate(value) {
+      if (!value) return "TBD";
+      if (typeof value === "string") return value;
+      if (value?.seconds) {
+        return new Date(value.seconds * 1000).toLocaleDateString();
+      }
+      if (value?.toDate) {
+        return value.toDate().toLocaleDateString();
+      }
+      return "TBD";
+    }
+
+    const CITY_COORDINATES = {
+      'Boulder, CO': { lat: 40.015, lon: -105.2705 },
+      'Denver, CO': { lat: 39.7392, lon: -104.9903 },
+      'Colorado Springs, CO': { lat: 38.8339, lon: -104.8214 },
+      'Fort Collins, CO': { lat: 40.5853, lon: -105.0844 },
+      'Aspen, CO': { lat: 39.1911, lon: -106.8175 },
+      'Vail, CO': { lat: 39.6403, lon: -106.3742 },
+      'Salt Lake City, UT': { lat: 40.7608, lon: -111.891 },
+      'Ogden, UT': { lat: 41.223, lon: -111.9738 },
+      'Logan, UT': { lat: 41.737, lon: -111.8338 },
+      'Moab, UT': { lat: 38.5733, lon: -109.5498 },
+      'Park City, UT': { lat: 40.6461, lon: -111.498 },
+      'Seattle, WA': { lat: 47.6062, lon: -122.3321 },
+      'Portland, OR': { lat: 45.5152, lon: -122.6784 },
+      'San Francisco, CA': { lat: 37.7749, lon: -122.4194 },
+      'Los Angeles, CA': { lat: 34.0522, lon: -118.2437 },
+      'New York, NY': { lat: 40.7128, lon: -74.006 },
+      'Boston, MA': { lat: 42.3601, lon: -71.0589 },
+      'Chicago, IL': { lat: 41.8781, lon: -87.6298 },
+      'Austin, TX': { lat: 30.2672, lon: -97.7431 },
+      'Phoenix, AZ': { lat: 33.4484, lon: -112.074 },
+      'Las Vegas, NV': { lat: 36.1699, lon: -115.1398 },
+    };
+
+    function getCoordinatesForCity(cityName) {
+      const normalized = String(cityName || "").trim();
+      if (!normalized) return null;
+      if (CITY_COORDINATES[normalized]) return CITY_COORDINATES[normalized];
+      const cityKey = Object.keys(CITY_COORDINATES).find(
+        key => key.toLowerCase() === normalized.toLowerCase()
+      );
+      return cityKey ? CITY_COORDINATES[cityKey] : null;
+    }
+
+    // ─── Reusable Image Upload Component ──────────────────────────────────────
+    function ImageUploadField({ label, emoji, value, onChange }) {
+      const [uploading, setUploading] = useState(false);
+      const [progress, setProgress] = useState(0);
+      const [error, setError] = useState(null);
+      const fileRef = useRef(null);
+
+      const handleFile = useCallback(async (file) => {
+        if (!file) return;
+        if (!file.type.startsWith('image/')) { setError('Please select an image file.'); return; }
+        if (file.size > 10 * 1024 * 1024) { setError('Image must be under 10 MB.'); return; }
+        setError(null);
+        setUploading(true);
+        setProgress(0);
+        try {
+          const url = await uploadImageToStorage(file, (pct) => setProgress(pct));
+          onChange(url);
+        } catch (err) {
+          console.error('Upload error:', err);
+          setError('Upload failed. Try again.');
+        } finally {
+          setUploading(false);
+        }
+      }, [onChange]);
+
+      const handleDrop = useCallback((e) => {
+        e.preventDefault(); e.stopPropagation();
+        e.currentTarget.classList.remove('border-emerald-400', 'bg-emerald-500/5');
+        const file = e.dataTransfer?.files?.[0];
+        handleFile(file);
+      }, [handleFile]);
+
+      const handleDragOver = useCallback((e) => {
+        e.preventDefault();
+        e.currentTarget.classList.add('border-emerald-400', 'bg-emerald-500/5');
+      }, []);
+
+      const handleDragLeave = useCallback((e) => {
+        e.currentTarget.classList.remove('border-emerald-400', 'bg-emerald-500/5');
+      }, []);
+
+      return (
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-slate-400">{label}</label>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* Upload zone */}
+            <div
+              className="border-2 border-dashed border-slate-700 rounded-lg p-4 text-center cursor-pointer hover:border-emerald-400 transition-colors"
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={() => fileRef.current?.click()}
+            >
+              <input
+                type="file"
+                ref={fileRef}
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => handleFile(e.target.files?.[0])}
+              />
+              <div className="text-2xl mb-1">{emoji || '📷'}</div>
+              <p className="text-xs text-slate-300 font-medium">Drag & drop or click</p>
+              <p className="text-xs text-slate-500 mt-1">PNG, JPG, WEBP · Max 10 MB</p>
+              {uploading && (
+                <div className="mt-2 w-full bg-slate-700 rounded-full h-1.5">
+                  <div className="bg-emerald-500 h-1.5 rounded-full transition-all" style={{ width: progress + '%' }} />
+                </div>
+              )}
+              {uploading && <p className="text-xs text-emerald-400 mt-1">Uploading {progress}%</p>}
+              {error && <p className="text-xs text-red-400 mt-1">{error}</p>}
+            </div>
+            {/* URL input + preview */}
+            <div className="flex flex-col gap-2">
+              <p className="text-xs text-slate-500">Or paste a URL</p>
+              <input
+                className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm"
+                placeholder="https://..."
+                value={value || ''}
+                onChange={(e) => onChange(e.target.value)}
+              />
+              {value && (
+                <div className="rounded-lg overflow-hidden border border-slate-700" style={{ maxHeight: '100px' }}>
+                  <img src={value} alt="Preview" className="w-full h-full object-cover" style={{ maxHeight: '100px' }} onError={(e) => e.target.parentElement.style.display = 'none'} />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function AdminPortal() {
+      const [authUser, setAuthUser] = useState(null);
+      const [authReady, setAuthReady] = useState(false);
+      const [profile, setProfile] = useState(null);
+      const [requests, setRequests] = useState([]);
+      const [races, setRaces] = useState([]);
+      const [directorMap, setDirectorMap] = useState({});
+      const [directorDetails, setDirectorDetails] = useState({});
+      const [tab, setTab] = useState("requests");
+      const [selectedRaceId, setSelectedRaceId] = useState(null);
+      const [registrationCounts, setRegistrationCounts] = useState({});
+      const [registrations, setRegistrations] = useState([]);
+      const [userMap, setUserMap] = useState({});
+      const [editMode, setEditMode] = useState(false);
+      const [editRaceForm, setEditRaceForm] = useState(null);
+      const [editDistances, setEditDistances] = useState([]);
+      const [editGuideOptIn, setEditGuideOptIn] = useState(false);
+      const updateEditDistance = (index, field, value) => {
+        setEditDistances(prev => prev.map((d, i) => i === index ? { ...d, [field]: value } : d));
+      };
+      const addEditDistance = () => setEditDistances(prev => [...prev, emptyDistance()]);
+      const removeEditDistance = (index) => { if (editDistances.length > 1) setEditDistances(prev => prev.filter((_, i) => i !== index)); };
+      const [isBackfilling, setIsBackfilling] = useState(false);
+      const [isBackfillingRequests, setIsBackfillingRequests] = useState(false);
+      const [raceSearch, setRaceSearch] = useState("");
+      const [raceGuides, setRaceGuides] = useState([]);
+      const [selectedGuideId, setSelectedGuideId] = useState(null);
+      const emptyDistance = () => ({
+        raceTitle: "", label: "", price: "", startTime: "", elevationGain: "",
+        cutoffTime: "", capacity: "", terrainTechnicality: "", gpxRouteLink: "",
+        aidStations: "", aidStationDetails: "", mandatoryGear: "",
+        terrainNotes: "", pacerPolicy: "", crewAccess: "", crewParking: "", description: "",
+      });
+      const [raceForm, setRaceForm] = useState({
+        name: "",
+        location: "",
+        date: "",
+        registrationStartDate: "",
+        registrationEndDate: "",
+        slogan: "",
+        description: "",
+        featuredImageUrl: "",
+        logoUrl: "",
+        checkInDetails: "",
+        refundTerms: "",
+        contactName: "",
+        contactEmail: "",
+        contactPhone: "",
+        website: "",
+        socialMedia: "",
+        notes: "",
+        isVisibleOnApp: true,
+        guideOptIn: false,
+      });
+      const [raceDistances, setRaceDistances] = useState([emptyDistance()]);
+      const updateRaceDistance = (index, field, value) => {
+        setRaceDistances(prev => prev.map((d, i) => i === index ? { ...d, [field]: value } : d));
+      };
+      const addRaceDistance = () => setRaceDistances(prev => [...prev, emptyDistance()]);
+      const removeRaceDistance = (index) => { if (raceDistances.length > 1) setRaceDistances(prev => prev.filter((_, i) => i !== index)); };
+      const [requestVisibility, setRequestVisibility] = useState({});
+      const [loginState, setLoginState] = useState({ email: "", password: "", error: "" });
+
+      useEffect(() => {
+        const unsubscribe = auth.onAuthStateChanged(async (user) => {
+          setAuthUser(user || null);
+          setAuthReady(true);
+
+          if (user) {
+            const profileSnap = await db.collection("users").doc(user.uid).get();
+            setProfile(profileSnap.exists ? profileSnap.data() : null);
+          } else {
+            setProfile(null);
+          }
+        });
+        return () => unsubscribe();
+      }, []);
+
+      useEffect(() => {
+        if (!authUser) return;
+        const unsubscribe = db
+          .collection("raceRequests")
+          .where("status", "==", "pending")
+          .onSnapshot((snapshot) => {
+            const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+            setRequests(list);
+          });
+        return () => unsubscribe();
+      }, [authUser]);
+
+      useEffect(() => {
+        if (!authUser) return;
+        const unsubscribe = db
+          .collection("trails")
+          .onSnapshot((snapshot) => {
+            const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+            setRaces(list);
+          });
+        return () => unsubscribe();
+      }, [authUser]);
+
+      useEffect(() => {
+        if (!authUser) return;
+        const unsubscribe = db
+          .collection("registrations")
+          .onSnapshot((snapshot) => {
+            const counts = {};
+            const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+            list.forEach((data) => {
+              const trailId = data.trailId;
+              if (trailId) {
+                counts[trailId] = (counts[trailId] || 0) + 1;
+              }
+            });
+            setRegistrations(list);
+            setRegistrationCounts(counts);
+          });
+        return () => unsubscribe();
+      }, [authUser]);
+
+      useEffect(() => {
+        if (!authUser) return;
+        const unsubscribe = db
+          .collection("raceGuides")
+          .onSnapshot((snapshot) => {
+            const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+            setRaceGuides(list);
+          });
+        return () => unsubscribe();
+      }, [authUser]);
+
+      useEffect(() => {
+        if (!authUser || registrations.length === 0) return;
+        const missingIds = Array.from(
+          new Set(registrations.map((reg) => reg.userId).filter(Boolean))
+        ).filter((uid) => !userMap[uid]);
+        if (missingIds.length === 0) return;
+        missingIds.forEach(async (uid) => {
+          try {
+            const docSnap = await db.collection("users").doc(uid).get();
+            if (docSnap.exists) {
+              const data = docSnap.data();
+              setUserMap((prev) => ({ ...prev, [uid]: data }));
+            }
+          } catch (error) {
+            console.error("Failed to load user profile:", error);
+          }
+        });
+      }, [authUser, registrations, userMap]);
+
+      const selectedRace = races.find((race) => race.id === selectedRaceId) || null;
+      const filteredRaces = races.filter((race) => {
+        if (!raceSearch.trim()) return true;
+        const term = raceSearch.toLowerCase();
+        const name = (race.name || "").toLowerCase();
+        const location = (race.location || "").toLowerCase();
+        return name.includes(term) || location.includes(term);
+      });
+      const selectedRegistrations = selectedRace
+        ? registrations.filter((reg) => reg.trailId === selectedRace.id)
+        : [];
+
+      useEffect(() => {
+        if (!selectedRace) {
+          setEditMode(false);
+          setEditRaceForm(null);
+          setEditDistances([]);
+          setEditGuideOptIn(false);
+        return;
+      }
+        setEditRaceForm({
+          name: selectedRace.name || "",
+          location: selectedRace.location || "",
+          date: selectedRace.date || "",
+          registrationStartDate: selectedRace.registrationStartDate || "",
+          registrationEndDate: selectedRace.registrationEndDate || "",
+          slogan: selectedRace.slogan || "",
+          featuredImageUrl: selectedRace.image || selectedRace.imageUrl || "",
+          logoUrl: selectedRace.logoUrl || "",
+          checkInDetails: selectedRace.checkInDetails || "",
+          refundTerms: selectedRace.refundTerms || "",
+          utmbIndex: selectedRace.utmbIndex || "",
+          itraPoints: selectedRace.itraPoints || "",
+          westernStatesQualifier: selectedRace.westernStatesQualifier || "",
+          description: selectedRace.description || "",
+          difficulty: selectedRace.difficulty || "",
+          website: selectedRace.website || "",
+          socialMedia: selectedRace.socialMedia || "",
+          contactName: selectedRace.contactName || "",
+          contactEmail: selectedRace.contactEmail || "",
+          contactPhone: selectedRace.contactPhone || "",
+          notes: selectedRace.notes || "",
+          isVisibleOnApp: selectedRace.isVisibleOnApp !== false,
+        });
+        // Load distances array or build from flat fields
+        if (Array.isArray(selectedRace.distances) && selectedRace.distances.length > 0) {
+          setEditDistances(selectedRace.distances.map(d => ({
+            raceTitle: d.raceTitle || "",
+            label: d.label || "",
+            price: d.price != null ? String(d.price) : "",
+            startTime: d.startTime || "",
+            elevationGain: d.elevationGain || "",
+            cutoffTime: d.cutoffTime || "",
+            capacity: d.capacity != null ? String(d.capacity) : "",
+            terrainTechnicality: d.terrainTechnicality != null ? String(d.terrainTechnicality) : "",
+            gpxRouteLink: d.gpxRouteLink || "",
+            aidStations: d.aidStations != null ? String(d.aidStations) : "",
+            aidStationDetails: d.aidStationDetails || "",
+            mandatoryGear: d.mandatoryGear || "",
+            terrainNotes: d.terrainNotes || "",
+            pacerPolicy: d.pacerPolicy || "",
+            crewAccess: d.crewAccess || "",
+            crewParking: d.crewParking || "",
+            description: d.description || "",
+          })));
+        } else {
+          // Build a single distance from flat fields
+          setEditDistances([{
+            raceTitle: "",
+            label: Array.isArray(selectedRace.distancesOffered) ? selectedRace.distancesOffered[0] || "" : "",
+            price: selectedRace.price != null ? String(selectedRace.price) : "",
+            startTime: selectedRace.startTime || selectedRace.start_time || "",
+            elevationGain: selectedRace.elevationGain || selectedRace.elevation || "",
+            cutoffTime: selectedRace.cutoffTime || "",
+            capacity: selectedRace.capacity != null ? String(selectedRace.capacity) : "",
+            terrainTechnicality: selectedRace.terrainTechnicality != null ? String(selectedRace.terrainTechnicality) : "",
+            gpxRouteLink: selectedRace.gpxRouteLink || "",
+            aidStations: "", aidStationDetails: "", mandatoryGear: "",
+            terrainNotes: "", pacerPolicy: selectedRace.pacerPolicy || "",
+            crewAccess: selectedRace.crewAccess || "", crewParking: "", description: "",
+          }]);
+        }
+        setEditGuideOptIn(selectedRace.guideOptIn === true);
+      }, [selectedRaceId]);
+
+      const handleUpdateRace = async () => {
+        if (!selectedRaceId || !editRaceForm) return;
+        try {
+          const distances = editDistances.map(d => ({
+            raceTitle: d.raceTitle || "",
+            label: d.label || "",
+            price: d.price ? parseFloat(d.price) || 0 : 0,
+            startTime: d.startTime || "",
+            elevationGain: d.elevationGain || "",
+            cutoffTime: d.cutoffTime || "",
+            capacity: d.capacity ? parseInt(d.capacity, 10) || 0 : 0,
+            terrainTechnicality: d.terrainTechnicality ? parseInt(d.terrainTechnicality, 10) || 0 : 0,
+            gpxRouteLink: d.gpxRouteLink || "",
+            aidStations: d.aidStations ? parseInt(d.aidStations, 10) || 0 : 0,
+            aidStationDetails: d.aidStationDetails || "",
+            mandatoryGear: d.mandatoryGear || "",
+            terrainNotes: d.terrainNotes || "",
+            pacerPolicy: d.pacerPolicy || "",
+            crewAccess: d.crewAccess || "",
+            crewParking: d.crewParking || "",
+            description: d.description || "",
+          }));
+          const distancesOffered = distances.map(d => d.label).filter(Boolean);
+          const coords = getCoordinatesForCity(editRaceForm.location);
+          const primary = distances[0] || {};
+
+          await db.collection("trails").doc(selectedRaceId).update({
+            name: editRaceForm.name,
+            location: editRaceForm.location,
+            date: editRaceForm.date,
+            registrationStartDate: editRaceForm.registrationStartDate || "",
+            registrationEndDate: editRaceForm.registrationEndDate || "",
+            slogan: editRaceForm.slogan,
+            image: editRaceForm.featuredImageUrl,
+            imageUrl: editRaceForm.featuredImageUrl,
+            logoUrl: editRaceForm.logoUrl,
+            distances: distances,
+            distancesOffered: distancesOffered,
+            checkInDetails: editRaceForm.checkInDetails || "",
+            refundTerms: editRaceForm.refundTerms,
+            utmbIndex: editRaceForm.utmbIndex || "",
+            itraPoints: editRaceForm.itraPoints || "",
+            westernStatesQualifier: editRaceForm.westernStatesQualifier || "",
+            description: editRaceForm.description,
+            difficulty: editRaceForm.difficulty || "",
+            website: editRaceForm.website,
+            socialMedia: editRaceForm.socialMedia,
+            contactName: editRaceForm.contactName,
+            contactEmail: editRaceForm.contactEmail,
+            contactPhone: editRaceForm.contactPhone,
+            notes: editRaceForm.notes || "",
+            price: primary.price || 0,
+            elevation: primary.elevationGain || "",
+            elevationGain: primary.elevationGain || "",
+            startTime: primary.startTime || "",
+            cutoffTime: primary.cutoffTime || "",
+            capacity: primary.capacity || 0,
+            terrainTechnicality: primary.terrainTechnicality || 0,
+            gpxRouteLink: primary.gpxRouteLink || "",
+            pacerPolicy: primary.pacerPolicy || "",
+            crewAccess: primary.crewAccess || "",
+            guideOptIn: editGuideOptIn === true,
+            isVisibleOnApp: editRaceForm.isVisibleOnApp === true,
+            ...(coords ? { latitude: coords.lat, longitude: coords.lon } : {}),
+            updatedAt: new Date(),
+          });
+
+          if (editGuideOptIn) {
+            await db.collection("raceGuides").doc(selectedRaceId).set({
+              trailId: selectedRaceId,
+              name: editRaceForm.name || "",
+              location: editRaceForm.location || "",
+              date: editRaceForm.date || "",
+              startTime: primary.startTime || "",
+              imageUrl: editRaceForm.featuredImageUrl || "",
+              logoUrl: editRaceForm.logoUrl || "",
+              distances: distances,
+              distancesOffered: distancesOffered,
+              elevationGain: primary.elevationGain || "",
+              terrainNotes: primary.terrainNotes || "",
+              aidStations: primary.aidStations || 0,
+              aidStationDetails: primary.aidStationDetails || "",
+              cutoffTime: primary.cutoffTime || "",
+              mandatoryGear: primary.mandatoryGear || "",
+              checkInDetails: editRaceForm.checkInDetails || "",
+              pacerPolicy: primary.pacerPolicy || "",
+              crewAccess: primary.crewAccess || "",
+              crewParking: primary.crewParking || "",
+              description: primary.description || "",
+              website: editRaceForm.website || "",
+              contactName: editRaceForm.contactName || "",
+              contactEmail: editRaceForm.contactEmail || "",
+              status: "published",
+              isPublished: true,
+              updatedAt: new Date(),
+            }, { merge: true });
+          }
+
+          setEditMode(false);
+      } catch (error) {
+          console.error("Failed to update race:", error);
+          alert("Failed to update race.");
+        }
+      };
+
+      useEffect(() => {
+        if (!authUser || races.length === 0) return;
+        const directorIds = Array.from(new Set(races.map((race) => race.directorId).filter(Boolean)));
+        const missingIds = directorIds.filter((id) => !directorMap[id]);
+        if (missingIds.length === 0) return;
+
+        missingIds.forEach(async (uid) => {
+          const docSnap = await db.collection("users").doc(uid).get();
+          if (docSnap.exists) {
+            const data = docSnap.data();
+            setDirectorMap((prev) => ({
+              ...prev,
+              [uid]: data.name || data.username || data.email || uid,
+            }));
+            setDirectorDetails((prev) => ({
+              ...prev,
+              [uid]: {
+                name: data.name || data.username || "",
+                email: data.email || "",
+              },
+            }));
+        } else {
+            setDirectorMap((prev) => ({ ...prev, [uid]: uid }));
+            setDirectorDetails((prev) => ({
+              ...prev,
+              [uid]: { name: uid, email: "" },
+            }));
+          }
+        });
+      }, [authUser, races, directorMap]);
+
+      const isAdmin = profile?.role === "admin" || authUser?.email === "rolsen83@gmail.com";
+
+      const handleApprove = async (request) => {
+        if (!request?.id || !request?.contactEmail) return;
+        try {
+          const approve = functions.httpsCallable("approveRaceAndCreateDirector");
+          const isVisibleOnApp = requestVisibility[request.id] === true;
+          const result = await approve({
+            requestId: request.id,
+            directorEmail: request.contactEmail,
+            directorName: request.contactName || "",
+            isVisibleOnApp,
+          });
+
+          const payload = result?.data || {};
+          const message = payload.tempPassword
+            ? `Director account created. Temporary password: ${payload.tempPassword}`
+            : payload.resetLink
+              ? `Director exists. Reset link: ${payload.resetLink}`
+              : "Director linked.";
+          alert(message);
+      } catch (error) {
+          console.error("Approve request failed:", error);
+          alert("Failed to approve request.");
+        }
+      };
+
+      const handleDirectorResetLink = async (directorId) => {
+        if (!directorId) return;
+        try {
+          const directorEmail = directorDetails[directorId]?.email || "";
+          const generateLink = functions.httpsCallable("generateDirectorResetLink");
+          const result = await generateLink({ directorId, directorEmail });
+          const resetLink = result?.data?.resetLink;
+          if (resetLink) {
+            alert(`Reset link: ${resetLink}`);
+          } else {
+            alert("Reset link not available.");
+          }
+        } catch (error) {
+          console.error("Failed to generate reset link:", error);
+          alert("Failed to generate reset link.");
+        }
+      };
+
+      const deleteRegistrationsForRace = async (raceId) => {
+        let snapshot = await db
+          .collection("registrations")
+          .where("trailId", "==", raceId)
+          .limit(450)
+          .get();
+
+        while (!snapshot.empty) {
+          const batch = db.batch();
+          snapshot.docs.forEach((doc) => batch.delete(doc.ref));
+          await batch.commit();
+          snapshot = await db
+            .collection("registrations")
+            .where("trailId", "==", raceId)
+            .limit(450)
+            .get();
+        }
+      };
+
+      const handleDeleteRace = async (raceId) => {
+        if (!raceId) return;
+        const confirmed = window.confirm(
+          "Delete this race? This will remove the race and its registrations."
+        );
+        if (!confirmed) return;
+        try {
+          await deleteRegistrationsForRace(raceId);
+          await db.collection("trails").doc(raceId).delete();
+          setSelectedRaceId(null);
+          alert("Race deleted.");
+        } catch (error) {
+          console.error("Failed to delete race:", error);
+          alert("Failed to delete race.");
+        }
+      };
+
+      const handleAddRace = async () => {
+        if (!raceForm.name || !raceForm.location || !raceForm.description || !raceForm.refundTerms) {
+          alert("Race Name, Location, Description, and Refund Terms are required.");
+        return;
+      }
+        // Build distances array
+        const distances = raceDistances.map(d => ({
+          raceTitle: d.raceTitle || "",
+          label: d.label || "",
+          price: d.price ? parseFloat(d.price) || 0 : 0,
+          startTime: d.startTime || "",
+          elevationGain: d.elevationGain || "",
+          cutoffTime: d.cutoffTime || "",
+          capacity: d.capacity ? parseInt(d.capacity, 10) || 0 : 0,
+          terrainTechnicality: d.terrainTechnicality ? parseInt(d.terrainTechnicality, 10) || 0 : 0,
+          gpxRouteLink: d.gpxRouteLink || "",
+          // Guide fields per distance
+          aidStations: d.aidStations ? parseInt(d.aidStations, 10) || 0 : 0,
+          aidStationDetails: d.aidStationDetails || "",
+          mandatoryGear: d.mandatoryGear || "",
+          terrainNotes: d.terrainNotes || "",
+          pacerPolicy: d.pacerPolicy || "",
+          crewAccess: d.crewAccess || "",
+          crewParking: d.crewParking || "",
+          description: d.description || "",
+        }));
+        const distancesOffered = distances.map(d => d.label).filter(Boolean);
+        const coords = getCoordinatesForCity(raceForm.location);
+
+        try {
+          const trailRef = await db.collection("trails").add({
+            name: raceForm.name,
+            location: raceForm.location,
+            date: raceForm.date || "",
+            registrationStartDate: raceForm.registrationStartDate || "",
+            registrationEndDate: raceForm.registrationEndDate || "",
+            slogan: raceForm.slogan || "",
+            description: raceForm.description || "",
+            image: raceForm.featuredImageUrl || "",
+            imageUrl: raceForm.featuredImageUrl || "",
+            logoUrl: raceForm.logoUrl || "",
+            distancesOffered: distancesOffered,
+            distances: distances,
+            checkInDetails: raceForm.checkInDetails || "",
+            refundTerms: raceForm.refundTerms || "",
+            contactName: raceForm.contactName || "",
+            contactEmail: raceForm.contactEmail || "",
+            contactPhone: raceForm.contactPhone || "",
+            website: raceForm.website || "",
+            socialMedia: raceForm.socialMedia || "",
+            notes: raceForm.notes || "",
+            // Use first distance values as top-level defaults
+            price: distances[0]?.price || 0,
+            elevation: distances[0]?.elevationGain || "",
+            elevationGain: distances[0]?.elevationGain || "",
+            startTime: distances[0]?.startTime || "",
+            cutoffTime: distances[0]?.cutoffTime || "",
+            capacity: distances[0]?.capacity || 0,
+            terrainTechnicality: distances[0]?.terrainTechnicality || 0,
+            gpxRouteLink: distances[0]?.gpxRouteLink || "",
+            guideOptIn: raceForm.guideOptIn === true,
+            isVisibleOnApp: raceForm.isVisibleOnApp === true,
+            ...(coords ? { latitude: coords.lat, longitude: coords.lon } : {}),
+            createdAt: new Date(),
+          });
+
+          // If guide is opted in, create the raceGuides document
+          if (raceForm.guideOptIn === true) {
+            await db.collection("raceGuides").doc(trailRef.id).set({
+              trailId: trailRef.id,
+              name: raceForm.name || "",
+              location: raceForm.location || "",
+              date: raceForm.date || "",
+              startTime: distances[0]?.startTime || "",
+              imageUrl: raceForm.featuredImageUrl || "",
+              logoUrl: raceForm.logoUrl || "",
+              distances: distances,
+              distancesOffered: distancesOffered,
+              elevationGain: distances[0]?.elevationGain || "",
+              terrainNotes: distances[0]?.terrainNotes || "",
+              aidStations: distances[0]?.aidStations || 0,
+              aidStationDetails: distances[0]?.aidStationDetails || "",
+              cutoffTime: distances[0]?.cutoffTime || "",
+              mandatoryGear: distances[0]?.mandatoryGear || "",
+              checkInDetails: raceForm.checkInDetails || "",
+              pacerPolicy: distances[0]?.pacerPolicy || "",
+              crewAccess: distances[0]?.crewAccess || "",
+              crewParking: distances[0]?.crewParking || "",
+              description: distances[0]?.description || "",
+              website: raceForm.website || "",
+              contactName: raceForm.contactName || "",
+              contactEmail: raceForm.contactEmail || "",
+              status: "published",
+              isPublished: true,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            });
+          }
+
+          setRaceForm({
+            name: "", location: "", date: "", registrationStartDate: "", registrationEndDate: "",
+            slogan: "", description: "", featuredImageUrl: "", logoUrl: "",
+            checkInDetails: "", refundTerms: "", contactName: "", contactEmail: "", contactPhone: "",
+            website: "", socialMedia: "", notes: "", isVisibleOnApp: true, guideOptIn: false,
+          });
+          setRaceDistances([emptyDistance()]);
+          alert("Race added.");
+          setTab("races");
+      } catch (error) {
+          console.error("Add race failed:", error);
+          alert("Failed to add race.");
+        }
+      };
+
+      const handleBackfillCoordinates = async () => {
+        if (!isAdmin) return;
+        setIsBackfilling(true);
+        try {
+          const snapshot = await db.collection("trails").get();
+          const updates = snapshot.docs.map((docSnap) => {
+            const data = docSnap.data();
+            const hasCoords =
+              Number.isFinite(Number(data?.latitude)) && Number.isFinite(Number(data?.longitude));
+            if (hasCoords) {
+              return null;
+            }
+            const coords = getCoordinatesForCity(data?.location);
+            if (!coords) {
+              return null;
+            }
+            return db.collection("trails").doc(docSnap.id).update({
+              latitude: coords.lat,
+              longitude: coords.lon,
+              updatedAt: new Date(),
+            });
+          });
+          const pending = updates.filter(Boolean);
+          if (pending.length > 0) {
+            await Promise.all(pending);
+          }
+          alert("Coordinate backfill complete.");
+        } catch (error) {
+          console.error("Backfill failed:", error);
+          alert("Backfill failed. Check console for details.");
+        } finally {
+          setIsBackfilling(false);
+        }
+      };
+
+      const buildRaceUpdateFromRequest = (data) => {
+        const update = {};
+        const setIf = (key, value) => {
+          if (value === undefined || value === null) return;
+          if (typeof value === "string" && value.trim() === "") return;
+          update[key] = value;
+        };
+
+        setIf("name", data.raceName || data.name);
+        setIf("slogan", data.slogan);
+        setIf("location", data.location);
+        setIf("date", data.date);
+        setIf("startTime", data.startTime);
+
+        const distances = Array.isArray(data.distancesOffered)
+          ? data.distancesOffered
+          : typeof data.distancesOffered === "string"
+            ? data.distancesOffered.split(",").map((d) => d.trim()).filter(Boolean)
+            : [];
+        if (distances.length > 0) {
+          update.distancesOffered = distances;
+        }
+
+        const elevationValue = data.elevationGain || data.elevation;
+        setIf("elevationGain", elevationValue);
+        setIf("elevation", elevationValue);
+        setIf("elevationProfiles", data.elevationProfiles);
+
+        if (data.terrainTechnicality !== undefined && data.terrainTechnicality !== "") {
+          const parsed = parseInt(data.terrainTechnicality, 10);
+          if (!Number.isNaN(parsed)) {
+            update.terrainTechnicality = parsed;
+          }
+        }
+
+        setIf("description", data.description);
+        setIf("logoUrl", data.logoUrl);
+        setIf("gpxRouteLink", data.gpxRouteLink);
+        setIf("pacerPolicy", data.pacerPolicy);
+        setIf("crewAccess", data.crewAccess);
+        setIf("refundTerms", data.refundTerms);
+        setIf("utmbIndex", data.utmbIndex);
+        setIf("itraPoints", data.itraPoints);
+        setIf("westernStatesQualifier", data.westernStatesQualifier);
+        setIf("cutoffTime", data.cutoffTime);
+        setIf("difficulty", data.difficulty);
+        setIf("website", data.website);
+        setIf("socialMedia", data.socialMedia);
+        setIf("contactName", data.contactName);
+        setIf("contactEmail", data.contactEmail);
+        setIf("contactPhone", data.contactPhone);
+
+        const imageValue = data.imageUrl || data.image;
+        setIf("image", imageValue);
+        setIf("imageUrl", imageValue);
+
+        if (data.price !== undefined && data.price !== "") {
+          const parsed = parseFloat(data.price);
+          if (!Number.isNaN(parsed)) {
+            update.price = parsed;
+          }
+        }
+
+        if (data.capacity !== undefined && data.capacity !== "") {
+          const parsed = parseInt(data.capacity, 10);
+          if (!Number.isNaN(parsed)) {
+            update.capacity = parsed;
+          }
+        }
+
+        return update;
+      };
+
+      const handleBackfillApprovedRequests = async () => {
+        if (!isAdmin) return;
+        setIsBackfillingRequests(true);
+        try {
+          const snapshot = await db.collection("raceRequests").where("status", "==", "approved").get();
+          let batch = db.batch();
+          let batchCount = 0;
+          let updatedCount = 0;
+
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data() || {};
+            const trailId = data.trailId;
+            if (!trailId) return;
+            const update = buildRaceUpdateFromRequest(data);
+            if (Object.keys(update).length === 0) return;
+            update.updatedAt = new Date();
+            const ref = db.collection("trails").doc(trailId);
+            batch.set(ref, update, { merge: true });
+            batchCount += 1;
+            updatedCount += 1;
+            if (batchCount >= 400) {
+              batch.commit();
+              batch = db.batch();
+              batchCount = 0;
+            }
+          });
+
+          if (batchCount > 0) {
+            await batch.commit();
+          }
+
+          alert(`Backfill complete. Updated ${updatedCount} race${updatedCount === 1 ? "" : "s"}.`);
+        } catch (error) {
+          console.error("Request backfill failed:", error);
+          alert("Request backfill failed. Check console for details.");
+        } finally {
+          setIsBackfillingRequests(false);
+        }
+      };
+
+      const handleToggleVisibility = async (raceId, nextValue) => {
+        if (!raceId) return;
+        try {
+          await db.collection("trails").doc(raceId).update({
+            isVisibleOnApp: !!nextValue,
+            updatedAt: new Date(),
+          });
+        } catch (error) {
+          console.error("Failed to toggle visibility:", error);
+          alert("Failed to update visibility.");
+        }
+      };
+
+      if (!authReady) {
+        return (
+          <div className="flex items-center justify-center h-screen">
+            <p className="text-slate-300">Loading Admin Portal...</p>
+          </div>
+        );
+      }
+
+      if (!authUser) {
+        return (
+          <div className="flex items-center justify-center h-screen">
+            <div className="glass p-8 rounded-2xl w-full max-w-md">
+              <h1 className="text-2xl font-semibold text-emerald-400 mb-4">Admin Login</h1>
+              <div className="space-y-4">
+          <input
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2"
+                  placeholder="Email"
+                  value={loginState.email}
+                  onChange={(e) => setLoginState({ ...loginState, email: e.target.value })}
+                />
+          <input
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2"
+                  placeholder="Password"
+            type="password"
+                  value={loginState.password}
+                  onChange={(e) => setLoginState({ ...loginState, password: e.target.value })}
+                />
+                {loginState.error && <p className="text-sm text-red-400">{loginState.error}</p>}
+        <button
+                  onClick={async () => {
+                    try {
+                      await auth.signInWithEmailAndPassword(loginState.email.trim().toLowerCase(), loginState.password);
+                    } catch (error) {
+                      setLoginState({ ...loginState, error: "Unable to sign in. Check credentials." });
+                    }
+                  }}
+                  className="bg-emerald-500 text-white px-4 py-2 rounded-lg w-full"
+                >
+                  Sign In
+        </button>
+    </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (!isAdmin) {
+        return (
+          <div className="flex items-center justify-center h-screen">
+            <div className="glass p-8 rounded-2xl w-full max-w-lg">
+              <h1 className="text-2xl font-semibold text-emerald-400 mb-4">Access Restricted</h1>
+              <p className="text-sm text-slate-300 mb-4">
+                Only admin users can approve race requests.
+              </p>
+        <button 
+                onClick={() => auth.signOut()}
+                className="bg-emerald-500 text-white px-4 py-2 rounded-lg"
+        >
+                Sign Out
+        </button>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen flex flex-col">
+          <header className="px-8 py-6 border-b border-emerald-500/10 bg-slate-950">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-semibold text-emerald-400">TrailMatch Admin Portal</h2>
+                <p className="text-sm text-slate-400">Approve requests and manage races</p>
+              </div>
+        <button 
+                onClick={() => auth.signOut()}
+                className="text-xs text-emerald-300"
+        >
+                Sign out
+        </button>
+            </div>
+            <div className="mt-4 flex gap-2">
+              {[
+                { id: "requests", label: "Race Requests" },
+                { id: "races", label: "All Races" },
+                { id: "guides", label: "Race Guides" },
+                { id: "add", label: "Add Race" },
+              ].map((item) => (
+        <button 
+                  key={item.id}
+                  onClick={() => setTab(item.id)}
+                  className={`px-4 py-2 rounded-lg text-sm ${
+                    tab === item.id
+                      ? "bg-emerald-500 text-white"
+                      : "bg-slate-900 text-slate-300 border border-slate-800"
+                  }`}
+                >
+                  {item.label}
+        </button>
+              ))}
+      </div>
+          </header>
+          <main className="flex-1 px-8 py-6 space-y-6">
+            {tab === "requests" && (
+              <div className="glass p-6 rounded-2xl">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-emerald-400">Pending Race Requests</h3>
+        </div>
+                {requests.length === 0 ? (
+                  <p className="text-sm text-slate-400">No pending requests.</p>
+                ) : (
+                  <div className="space-y-4">
+                    {requests.map((req) => (
+                      <div key={req.id} className="bg-slate-900/70 border border-slate-800 rounded-xl p-4">
+                        <div className="flex items-start justify-between gap-6">
+                          <div className="space-y-3">
+        <div>
+                              <div className="flex items-center gap-2">
+                              <h4 className="text-base font-semibold">{req.raceName || "Unnamed Race"}</h4>
+                                {req.guideOptIn && (
+                                  <span className="text-[10px] font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full">🗺️ Guide</span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-400">
+                                {req.location || "Location TBD"} · {req.date || "Date TBD"}
+                              </p>
+        </div>
+                            <div className="grid grid-cols-2 gap-4 text-xs text-slate-300">
+        <div>
+                                <p className="text-slate-500 uppercase tracking-wider mb-1">Contact</p>
+                                <p>{req.contactName || "Director"}</p>
+                                <p className="text-slate-400">{req.contactEmail || "Email missing"}</p>
+                                {req.contactPhone && <p className="text-slate-400">{req.contactPhone}</p>}
+        </div>
+        <div>
+                                {Array.isArray(req.distances) && req.distances.length > 0 ? (
+                                  <div>
+                                    <p className="text-slate-500 uppercase tracking-wider mb-1">Distances</p>
+                                    <div className="space-y-1">
+                                      {req.distances.map((d, idx) => (
+                                        <p key={idx}>
+                                          <span className="text-emerald-400 font-medium">{d.label}</span>
+                                          {" · $"}{parseFloat(d.price) || 0}
+                                          {" · "}{d.startTime}
+                                          {" · "}{d.elevationGain}
+                                          {" · cutoff "}{d.cutoffTime}
+                                          {" · cap "}{d.capacity}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : (
+        <div>
+                                <p className="text-slate-500 uppercase tracking-wider mb-1">Race Info</p>
+                                <p>Distances: {(req.distancesOffered || []).join(", ") || "Not specified"}</p>
+                                <p>Elevation: {req.elevationGain || req.elevation || "Not specified"}</p>
+                                <p>Capacity: {req.capacity || "Not set"}</p>
+                                <p>Cutoff Time: {req.cutoffTime || "Not set"}</p>
+                                <p>Price: {req.price ? `$${parseFloat(req.price) || 0}` : "Not set"}</p>
+                                  </div>
+                                )}
+        </div>
+        </div>
+                            <div className="grid grid-cols-2 gap-4 text-xs text-slate-300">
+        <div>
+                                <p className="text-slate-500 uppercase tracking-wider mb-1">Marketing</p>
+                                <p>Slogan: {req.slogan || "Not set"}</p>
+                                <p>Image: {req.image || req.imageUrl || req.featuredImageUrl || "Not set"}</p>
+                                <p>Logo: {req.logoUrl || "Not set"}</p>
+        </div>
+        <div>
+                                <p className="text-slate-500 uppercase tracking-wider mb-1">Technical</p>
+                                <p>Technicality: {req.terrainTechnicality || "Not set"}</p>
+                                <p>GPX: {req.gpxRouteLink || "Not set"}</p>
+                                <p>Website: {req.website || "Not provided"}</p>
+                                <p>Social: {req.socialMedia || "Not provided"}</p>
+        </div>
+          </div>
+                            <div className="grid grid-cols-2 gap-4 text-xs text-slate-300">
+                              <div>
+                                <p className="text-slate-500 uppercase tracking-wider mb-1">Logistics</p>
+                                <p>Pacer Policy: {req.pacerPolicy || "Not set"}</p>
+                                <p>Crew Access: {req.crewAccess || "Not set"}</p>
+                                <p>Refund Terms: {req.refundTerms || "Not set"}</p>
+        </div>
+                              <div>
+                                <p className="text-slate-500 uppercase tracking-wider mb-1">Credentials</p>
+                                <p>UTMB Index: {req.utmbIndex || "Not set"}</p>
+                                <p>ITRA Points: {req.itraPoints || "Not set"}</p>
+                                <p>WS Qualifier: {req.westernStatesQualifier || "Not set"}</p>
+        </div>
+          </div>
+                            {req.description && (
+                              <div className="text-xs text-slate-300">
+                                <p className="text-slate-500 uppercase tracking-wider mb-1">Description</p>
+                                <p>{req.description}</p>
+          </div>
+                            )}
+                            {req.notes && (
+                              <div className="text-xs text-slate-400">
+                                <p className="text-slate-500 uppercase tracking-wider mb-1">Notes</p>
+                                <p>{req.notes}</p>
+          </div>
+                            )}
+                            <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
+                              <input
+                                type="checkbox"
+                                checked={requestVisibility[req.id] === true}
+                                onChange={(e) =>
+                                  setRequestVisibility((prev) => ({
+                                    ...prev,
+                                    [req.id]: e.target.checked,
+                                  }))
+                                }
+                              />
+                              Show on app after approval
+                            </label>
+            </div>
+        <button
+                            onClick={() => handleApprove(req)}
+                            className="bg-emerald-500 text-white px-4 py-2 rounded-lg text-sm"
+        >
+                            Approve & Create Login
+        </button>
+          </div>
+        </div>
+                    ))}
+      </div>
+                )}
+              </div>
+            )}
+
+            {tab === "races" && (
+              <div className="glass p-6 rounded-2xl">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-emerald-400">All Races</h3>
+                  <div className="flex items-center gap-3">
+                    <input
+                      className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-slate-100 text-xs w-56"
+                      placeholder="Search races..."
+                      value={raceSearch}
+                      onChange={(e) => setRaceSearch(e.target.value)}
+                    />
+                    <button
+                      onClick={handleBackfillCoordinates}
+                      disabled={isBackfilling}
+                      className={`text-xs px-3 py-2 rounded-lg ${
+                        isBackfilling
+                          ? "bg-slate-800 text-slate-500"
+                          : "bg-emerald-500 text-white"
+                      }`}
+                    >
+                      {isBackfilling ? "Backfilling..." : "Backfill Coordinates"}
+                    </button>
+                    <button
+                      onClick={handleBackfillApprovedRequests}
+                      disabled={isBackfillingRequests}
+                      className={`text-xs px-3 py-2 rounded-lg ${
+                        isBackfillingRequests
+                          ? "bg-slate-800 text-slate-500"
+                          : "bg-emerald-500 text-white"
+                      }`}
+                    >
+                      {isBackfillingRequests ? "Backfilling..." : "Backfill Requests"}
+                    </button>
+                  </div>
+                </div>
+                {selectedRace && (
+                  <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-4 mb-6">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h4 className="text-base font-semibold">{selectedRace.name || "Unnamed Race"}</h4>
+                        <p className="text-xs text-slate-400">
+                          {selectedRace.location || "Location TBD"} · {formatDate(selectedRace.date)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-3">
+        <button
+                          onClick={() => setEditMode((prev) => !prev)}
+                          className="text-xs text-emerald-300"
+        >
+                          {editMode ? "Cancel Edit" : "Edit Race"}
+        </button>
+        <button
+                          onClick={() =>
+                            handleToggleVisibility(
+                              selectedRace.id,
+                              selectedRace.isVisibleOnApp === false
+                            )
+                          }
+                          className="text-xs text-emerald-300"
+        >
+                          {selectedRace.isVisibleOnApp === false ? "Show on App" : "Hide from App"}
+        </button>
+                        {isAdmin && (
+                          <button
+                            onClick={() => handleDeleteRace(selectedRace.id)}
+                            className="text-xs text-red-400"
+                          >
+                            Delete Race
+                          </button>
+                        )}
+          <button
+                          onClick={() => setSelectedRaceId(null)}
+                          className="text-xs text-emerald-300"
+          >
+                          Close
+          </button>
+        </div>
+        </div>
+                    {editMode && editRaceForm ? (
+                      <div className="mt-6 space-y-6">
+
+                        {/* --- Event Details --- */}
+                        <div>
+                          <h4 className="text-sm font-semibold text-emerald-400 mb-3 border-b border-slate-700 pb-1">Event Details</h4>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="col-span-2 flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Race Name <span className="text-red-400">*</span></label>
+                              <input className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" value={editRaceForm.name} onChange={(e) => setEditRaceForm(p => ({ ...p, name: e.target.value }))} />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Location <span className="text-red-400">*</span></label>
+                              <input className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" placeholder="City, State" value={editRaceForm.location} onChange={(e) => setEditRaceForm(p => ({ ...p, location: e.target.value }))} />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Race Date</label>
+                              <input type="date" className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" value={editRaceForm.date} onChange={(e) => setEditRaceForm(p => ({ ...p, date: e.target.value }))} />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Registration Opens</label>
+                              <input type="date" className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" value={editRaceForm.registrationStartDate} onChange={(e) => setEditRaceForm(p => ({ ...p, registrationStartDate: e.target.value }))} />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Registration Closes</label>
+                              <input type="date" className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" value={editRaceForm.registrationEndDate} onChange={(e) => setEditRaceForm(p => ({ ...p, registrationEndDate: e.target.value }))} />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* --- Marketing --- */}
+                        <div>
+                          <h4 className="text-sm font-semibold text-emerald-400 mb-3 border-b border-slate-700 pb-1">Marketing</h4>
+                          <div className="grid grid-cols-1 gap-4">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Slogan / Tagline</label>
+                              <input className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" value={editRaceForm.slogan} onChange={(e) => setEditRaceForm(p => ({ ...p, slogan: e.target.value }))} />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Race Description</label>
+                              <textarea className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 min-h-[120px]" value={editRaceForm.description} onChange={(e) => setEditRaceForm(p => ({ ...p, description: e.target.value }))} />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* --- Media --- */}
+                        <div>
+                          <h4 className="text-sm font-semibold text-emerald-400 mb-3 border-b border-slate-700 pb-1">Media</h4>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <ImageUploadField
+                              label="Featured Image"
+                              emoji="📷"
+                              value={editRaceForm.featuredImageUrl}
+                              onChange={(url) => setEditRaceForm(p => ({ ...p, featuredImageUrl: url }))}
+                            />
+                            <ImageUploadField
+                              label="Race Logo"
+                              emoji="🏔️"
+                              value={editRaceForm.logoUrl}
+                              onChange={(url) => setEditRaceForm(p => ({ ...p, logoUrl: url }))}
+                            />
+                          </div>
+                        </div>
+
+                        {/* --- Distances --- */}
+                        <div>
+                          <h4 className="text-sm font-semibold text-emerald-400 mb-3 border-b border-slate-700 pb-1">Distances</h4>
+                          <p className="text-xs text-slate-500 mb-3">Each distance has its own details — just like the race submission form.</p>
+                          {editDistances.map((dist, idx) => (
+                            <div key={idx} className="bg-slate-950/50 border border-slate-800 rounded-xl p-4 mb-4">
+                              <div className="flex items-center justify-between mb-3">
+                                <span className="text-sm font-semibold text-emerald-400">Distance #{idx + 1}{dist.raceTitle ? ` — ${dist.raceTitle}` : dist.label ? ` — ${dist.label}` : ''}</span>
+                                {editDistances.length > 1 && (
+                                  <button onClick={() => removeEditDistance(idx)} className="text-red-400 text-xs hover:text-red-300">✕ Remove</button>
+                                )}
+                              </div>
+                              <div className="grid grid-cols-2 gap-3">
+                                <div className="flex flex-col gap-1">
+                                  <label className="text-xs text-slate-400">Race Title (tab label)</label>
+                                  <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.raceTitle} onChange={(e) => updateEditDistance(idx, 'raceTitle', e.target.value)} />
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                  <label className="text-xs text-slate-400">Distance Label (e.g. 50K, 100M)</label>
+                                  <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.label} onChange={(e) => updateEditDistance(idx, 'label', e.target.value)} />
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                  <label className="text-xs text-slate-400">Price ($)</label>
+                                  <input type="number" className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.price} onChange={(e) => updateEditDistance(idx, 'price', e.target.value)} />
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                  <label className="text-xs text-slate-400">Start Time</label>
+                                  <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" placeholder="e.g. 6:00 AM" value={dist.startTime} onChange={(e) => updateEditDistance(idx, 'startTime', e.target.value)} />
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                  <label className="text-xs text-slate-400">Elevation Gain</label>
+                                  <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" placeholder="e.g. 15,000 ft" value={dist.elevationGain} onChange={(e) => updateEditDistance(idx, 'elevationGain', e.target.value)} />
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                  <label className="text-xs text-slate-400">Cutoff Time</label>
+                                  <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" placeholder="e.g. 30 hours" value={dist.cutoffTime} onChange={(e) => updateEditDistance(idx, 'cutoffTime', e.target.value)} />
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                  <label className="text-xs text-slate-400">Capacity</label>
+                                  <input type="number" className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.capacity} onChange={(e) => updateEditDistance(idx, 'capacity', e.target.value)} />
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                  <label className="text-xs text-slate-400">Terrain Technicality (1-5)</label>
+                                  <input type="number" min="1" max="5" className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.terrainTechnicality} onChange={(e) => updateEditDistance(idx, 'terrainTechnicality', e.target.value)} />
+                                </div>
+                                <div className="col-span-2 flex flex-col gap-1">
+                                  <label className="text-xs text-slate-400">GPX Route Link</label>
+                                  <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" placeholder="https://..." value={dist.gpxRouteLink} onChange={(e) => updateEditDistance(idx, 'gpxRouteLink', e.target.value)} />
+                                </div>
+                              </div>
+
+                              {/* Per-distance guide fields */}
+                              {editGuideOptIn && (
+                                <div className="mt-4 pt-4 border-t border-emerald-500/20">
+                                  <p className="text-emerald-400 text-xs font-semibold uppercase tracking-wider mb-3">🗺️ Guide — {dist.label || dist.raceTitle || `Distance #${idx + 1}`}</p>
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <div className="flex flex-col gap-1">
+                                      <label className="text-xs text-slate-400">Aid Stations (#)</label>
+                                      <input type="number" className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.aidStations} onChange={(e) => updateEditDistance(idx, 'aidStations', e.target.value)} />
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                      <label className="text-xs text-slate-400">Mandatory Gear</label>
+                                      <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.mandatoryGear} onChange={(e) => updateEditDistance(idx, 'mandatoryGear', e.target.value)} />
+                                    </div>
+                                    <div className="col-span-2 flex flex-col gap-1">
+                                      <label className="text-xs text-slate-400">Aid Station Details</label>
+                                      <textarea className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm min-h-[60px]" value={dist.aidStationDetails} onChange={(e) => updateEditDistance(idx, 'aidStationDetails', e.target.value)} />
+                                    </div>
+                                    <div className="col-span-2 flex flex-col gap-1">
+                                      <label className="text-xs text-slate-400">Terrain Notes</label>
+                                      <textarea className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm min-h-[60px]" value={dist.terrainNotes} onChange={(e) => updateEditDistance(idx, 'terrainNotes', e.target.value)} />
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                      <label className="text-xs text-slate-400">Pacer Policy</label>
+                                      <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.pacerPolicy} onChange={(e) => updateEditDistance(idx, 'pacerPolicy', e.target.value)} />
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                      <label className="text-xs text-slate-400">Crew Access</label>
+                                      <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.crewAccess} onChange={(e) => updateEditDistance(idx, 'crewAccess', e.target.value)} />
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                      <label className="text-xs text-slate-400">Crew Parking</label>
+                                      <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.crewParking} onChange={(e) => updateEditDistance(idx, 'crewParking', e.target.value)} />
+                                    </div>
+                                    <div className="col-span-2 flex flex-col gap-1">
+                                      <label className="text-xs text-slate-400">Distance Description</label>
+                                      <textarea className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm min-h-[60px]" value={dist.description} onChange={(e) => updateEditDistance(idx, 'description', e.target.value)} />
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                          <button onClick={addEditDistance} className="text-emerald-400 text-sm hover:text-emerald-300">+ Add Another Distance</button>
+      </div>
+
+                        {/* --- Race Guide Toggle --- */}
+                        <div>
+                          <h4 className="text-sm font-semibold text-emerald-400 mb-3 border-b border-slate-700 pb-1">🗺️ Race Guide</h4>
+                          <div className="flex items-center gap-3 mb-2">
+          <button
+                              type="button"
+                              onClick={() => setEditGuideOptIn(prev => !prev)}
+                              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${editGuideOptIn ? 'bg-emerald-500' : 'bg-slate-700'}`}
+                            >
+                              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${editGuideOptIn ? 'translate-x-6' : 'translate-x-1'}`} />
+                            </button>
+                            <span className={`text-sm font-medium ${editGuideOptIn ? 'text-emerald-400' : 'text-slate-400'}`}>
+                              {editGuideOptIn ? 'Race Guide Included' : 'No Race Guide'}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-500">When enabled, per-distance guide fields appear inside each distance card above.</p>
+                        </div>
+
+                        {/* --- Logistics --- */}
+                        <div>
+                          <h4 className="text-sm font-semibold text-emerald-400 mb-3 border-b border-slate-700 pb-1">Logistics</h4>
+                          <div className="grid grid-cols-1 gap-4">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Check-In Details</label>
+                              <textarea className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 min-h-[80px]" value={editRaceForm.checkInDetails} onChange={(e) => setEditRaceForm(p => ({ ...p, checkInDetails: e.target.value }))} />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Refund / Deferral Terms <span className="text-red-400">*</span></label>
+                              <textarea className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 min-h-[80px]" value={editRaceForm.refundTerms} onChange={(e) => setEditRaceForm(p => ({ ...p, refundTerms: e.target.value }))} />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* --- Contact --- */}
+                        <div>
+                          <h4 className="text-sm font-semibold text-emerald-400 mb-3 border-b border-slate-700 pb-1">Contact Information</h4>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Contact Name</label>
+                              <input className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" value={editRaceForm.contactName} onChange={(e) => setEditRaceForm(p => ({ ...p, contactName: e.target.value }))} />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Contact Email</label>
+                              <input type="email" className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" value={editRaceForm.contactEmail} onChange={(e) => setEditRaceForm(p => ({ ...p, contactEmail: e.target.value }))} />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Contact Phone</label>
+                              <input className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" value={editRaceForm.contactPhone} onChange={(e) => setEditRaceForm(p => ({ ...p, contactPhone: e.target.value }))} />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Race Website</label>
+                              <input className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" placeholder="https://..." value={editRaceForm.website} onChange={(e) => setEditRaceForm(p => ({ ...p, website: e.target.value }))} />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Social Media</label>
+                              <input className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" value={editRaceForm.socialMedia} onChange={(e) => setEditRaceForm(p => ({ ...p, socialMedia: e.target.value }))} />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* --- Additional / Technical --- */}
+                        <div>
+                          <h4 className="text-sm font-semibold text-emerald-400 mb-3 border-b border-slate-700 pb-1">Additional</h4>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">UTMB Index</label>
+                              <input className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" value={editRaceForm.utmbIndex} onChange={(e) => setEditRaceForm(p => ({ ...p, utmbIndex: e.target.value }))} />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">ITRA Points</label>
+                              <input className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" value={editRaceForm.itraPoints} onChange={(e) => setEditRaceForm(p => ({ ...p, itraPoints: e.target.value }))} />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">WS Qualifier</label>
+                              <input className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" value={editRaceForm.westernStatesQualifier} onChange={(e) => setEditRaceForm(p => ({ ...p, westernStatesQualifier: e.target.value }))} />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Difficulty</label>
+                              <input className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" value={editRaceForm.difficulty} onChange={(e) => setEditRaceForm(p => ({ ...p, difficulty: e.target.value }))} />
+                            </div>
+                            <div className="col-span-2 flex flex-col gap-1">
+                              <label className="text-xs text-slate-400">Additional Notes</label>
+                              <textarea className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 min-h-[80px]" value={editRaceForm.notes} onChange={(e) => setEditRaceForm(p => ({ ...p, notes: e.target.value }))} />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* --- Visibility + Save --- */}
+                        <div className="flex items-center justify-between pt-2">
+                          <label className="flex items-center gap-2 text-xs text-slate-300">
+                            <input type="checkbox" checked={editRaceForm.isVisibleOnApp === true} onChange={(e) => setEditRaceForm(p => ({ ...p, isVisibleOnApp: e.target.checked }))} />
+                            Show this race on the app
+                          </label>
+                          <button onClick={handleUpdateRace} className="bg-emerald-500 text-white px-6 py-2 rounded-lg text-sm font-semibold hover:bg-emerald-600 transition">
+                          Save Changes
+          </button>
+                        </div>
+        </div>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-2 gap-4 text-xs text-slate-300 mt-4">
+                      <div>
+                        <p className="text-slate-500 uppercase tracking-wider mb-1">Race Info</p>
+                        <p>Price: ${parseFloat(selectedRace.price) || 0}</p>
+                        <p>Capacity: {selectedRace.capacity || "Not set"}</p>
+                        <p>Cutoff Time: {selectedRace.cutoffTime || "Not set"}</p>
+                        <p>Start Time: {selectedRace.startTime || "Not set"}</p>
+                        <p>Registrations: {registrationCounts[selectedRace.id] || 0}</p>
+                        <p>Difficulty: {selectedRace.difficulty || "Not set"}</p>
+                        <p>Elevation: {selectedRace.elevationGain || selectedRace.elevation || "Not set"}</p>
+                        <p>
+                          Elevation by Distance: {selectedRace.elevationProfiles || "Not set"}
+                        </p>
+                        <p>Distances: {(selectedRace.distancesOffered || []).join(", ") || "Not specified"}</p>
+                        <p>
+                          Visible on App:{" "}
+                          {selectedRace.isVisibleOnApp === false ? "Hidden" : "Visible"}
+                        </p>
+        </div>
+                      <div>
+                        <p className="text-slate-500 uppercase tracking-wider mb-1">Director</p>
+                        <p>
+                          {selectedRace.directorId
+                            ? (directorMap[selectedRace.directorId] || selectedRace.directorId)
+                            : "Unassigned"}
+                        </p>
+                        {selectedRace.directorId && (
+                          <>
+                            <p className="text-slate-400">
+                              {directorDetails[selectedRace.directorId]?.email || "Email not available"}
+                            </p>
+                            <button
+                              onClick={() => handleDirectorResetLink(selectedRace.directorId)}
+                              className="mt-2 text-xs text-emerald-300"
+                            >
+                              Send Reset Link
+                            </button>
+                          </>
+                        )}
+                        <p className="text-slate-500 uppercase tracking-wider mt-3 mb-1">Media</p>
+                        <p className="truncate">Image: {selectedRace.image || selectedRace.imageUrl || "Not set"}</p>
+                        <p className="truncate">Logo: {selectedRace.logoUrl || "Not set"}</p>
+                        <p className="truncate">GPX: {selectedRace.gpxRouteLink || "Not set"}</p>
+      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 text-xs text-slate-300 mt-4">
+                      <div>
+                        <p className="text-slate-500 uppercase tracking-wider mb-1">Marketing</p>
+                        <p>Slogan: {selectedRace.slogan || "Not set"}</p>
+        </div>
+                      <div>
+                        <p className="text-slate-500 uppercase tracking-wider mb-1">Technical</p>
+                        <p>Technicality: {selectedRace.terrainTechnicality || "Not set"}</p>
+                        <p>UTMB Index: {selectedRace.utmbIndex || "Not set"}</p>
+                        <p>ITRA Points: {selectedRace.itraPoints || "Not set"}</p>
+                        <p>WS Qualifier: {selectedRace.westernStatesQualifier || "Not set"}</p>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 text-xs text-slate-300 mt-4">
+                      <div>
+                        <p className="text-slate-500 uppercase tracking-wider mb-1">Logistics</p>
+                        <p>Pacer Policy: {selectedRace.pacerPolicy || "Not set"}</p>
+                        <p>Crew Access: {selectedRace.crewAccess || "Not set"}</p>
+                        <p>Refund Terms: {selectedRace.refundTerms || "Not set"}</p>
+                      </div>
+                      <div>
+                        <p className="text-slate-500 uppercase tracking-wider mb-1">Links</p>
+                        <p>Website: {selectedRace.website || "Not set"}</p>
+                        <p>Social: {selectedRace.socialMedia || "Not set"}</p>
+                      </div>
+                    </div>
+                    {selectedRace.description && (
+                      <div className="text-xs text-slate-300 mt-4">
+                        <p className="text-slate-500 uppercase tracking-wider mb-1">Description</p>
+                        <p>{selectedRace.description}</p>
+                      </div>
+                    )}
+                      </>
+                    )}
+                    <div className="border-t border-slate-800 mt-6 pt-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="text-base font-semibold text-emerald-300">Roster</h4>
+                        <span className="text-xs text-slate-400">
+                          {selectedRegistrations.length} registered
+                        </span>
+                      </div>
+                      {selectedRegistrations.length === 0 ? (
+                        <p className="text-sm text-slate-400">No registrations yet.</p>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead className="text-slate-400">
+                              <tr>
+                                <th className="text-left py-2">Runner</th>
+                                <th className="text-left py-2">Email</th>
+                                <th className="text-left py-2">Bib</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {selectedRegistrations.map((reg) => {
+                                const info = userMap[reg.userId] || {};
+                                const regName =
+                                  reg.fullName ||
+                                  [reg.firstName, reg.lastName].filter(Boolean).join(" ");
+                                const name = regName || info.name || info.username || "Runner";
+                                const email = info.isPrivate ? "Privacy Protected" : info.email || "";
+                                return (
+                                  <tr key={reg.id} className="border-t border-slate-800">
+                                    <td className="py-2 text-slate-100">{name}</td>
+                                    <td className="py-2 text-slate-400">{email}</td>
+                                    <td className="py-2 text-slate-300">{reg.bibNumber || "-"}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-slate-400">
+                      <tr>
+                        <th className="text-left py-2">Name</th>
+                        <th className="text-left py-2">Location</th>
+                        <th className="text-left py-2">Date</th>
+                        <th className="text-left py-2">Price</th>
+                        <th className="text-left py-2">Capacity</th>
+                        <th className="text-left py-2">Cutoff</th>
+                        <th className="text-left py-2">Director</th>
+                        <th className="text-left py-2">Registrations</th>
+                        <th className="text-left py-2">Visible</th>
+              </tr>
+            </thead>
+                    <tbody>
+                      {filteredRaces.map((race) => (
+                        <tr
+                          key={race.id}
+                          className={`border-t border-slate-800 cursor-pointer ${
+                            selectedRaceId === race.id ? "bg-emerald-500/10" : "hover:bg-slate-800/50"
+                          }`}
+                          onClick={() => setSelectedRaceId(race.id)}
+                        >
+                          <td className="py-3">{race.name || "Unnamed"}</td>
+                          <td className="py-3">{race.location || "TBD"}</td>
+                          <td className="py-3">{formatDate(race.date)}</td>
+                          <td className="py-3">${parseFloat(race.price) || 0}</td>
+                          <td className="py-3">{race.capacity || "Not set"}</td>
+                          <td className="py-3">{race.cutoffTime || "Not set"}</td>
+                          <td className="py-3">
+                            {race.directorId ? (directorMap[race.directorId] || race.directorId) : "Unassigned"}
+                          </td>
+                          <td className="py-3">
+                            {registrationCounts[race.id] || 0}
+                          </td>
+                          <td className="py-3">
+                            <button
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                handleToggleVisibility(race.id, race.isVisibleOnApp === false);
+                              }}
+                              className="text-xs text-emerald-300"
+                            >
+                              {race.isVisibleOnApp === false ? "Hidden" : "Visible"}
+                            </button>
+                          </td>
+              </tr>
+                      ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+            )}
+
+            {tab === "guides" && (
+              <div className="glass p-6 rounded-2xl">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-emerald-400">🗺️ Race Guides</h3>
+                  <span className="text-xs text-slate-400">{raceGuides.length} guide{raceGuides.length !== 1 ? 's' : ''}</span>
+                </div>
+
+                {raceGuides.length === 0 ? (
+                  <p className="text-sm text-slate-400">No race guides have been created yet.</p>
+                ) : selectedGuideId ? (() => {
+                  const guide = raceGuides.find(g => g.id === selectedGuideId);
+                  if (!guide) return <p className="text-sm text-slate-400">Guide not found.</p>;
+                  return (
+                    <div>
+                      <button onClick={() => setSelectedGuideId(null)} className="text-xs text-emerald-300 mb-4">← Back to all guides</button>
+                      <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-6">
+                        <div className="flex items-start gap-4 mb-6">
+                          {(guide.imageUrl || guide.logoUrl) && (
+                            <img src={guide.logoUrl || guide.imageUrl} className="w-16 h-16 rounded-xl object-cover border border-slate-700" />
+                          )}
+                          <div>
+                            <h4 className="text-lg font-bold text-white">{guide.name || "Unnamed Race"}</h4>
+                            <p className="text-sm text-slate-400">{guide.location || "Location TBD"} · {guide.date || "Date TBD"}</p>
+                            <div className="flex gap-2 mt-1">
+                              <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${guide.isPublished ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-slate-700 text-slate-400 border border-slate-600'}`}>
+                                {guide.isPublished ? 'Published' : 'Draft'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4 text-xs text-slate-300">
+                          <div>
+                            <p className="text-slate-500 uppercase tracking-wider mb-2">Event Info</p>
+                            <p>Start Time: {guide.startTime || "Not set"}</p>
+                            <p>Cutoff Time: {guide.cutoffTime || "Not set"}</p>
+                            <p>Elevation Gain: {guide.elevationGain || "Not set"}</p>
+                            <p>Distances: {(guide.distancesOffered || []).join(", ") || "Not specified"}</p>
+                          </div>
+                          <div>
+                            <p className="text-slate-500 uppercase tracking-wider mb-2">Logistics</p>
+                            <p>Check-In: {guide.checkInDetails || "Not set"}</p>
+                            <p>Mandatory Gear: {guide.mandatoryGear || "Not set"}</p>
+                            <p>Pacer Policy: {guide.pacerPolicy || "Not set"}</p>
+                            <p>Crew Access: {guide.crewAccess || "Not set"}</p>
+                            <p>Crew Parking: {guide.crewParking || "Not set"}</p>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4 text-xs text-slate-300 mt-4">
+                          <div>
+                            <p className="text-slate-500 uppercase tracking-wider mb-2">Aid Stations</p>
+                            <p>Count: {guide.aidStations || "Not set"}</p>
+                            <p>Details: {guide.aidStationDetails || "Not set"}</p>
+                          </div>
+                          <div>
+                            <p className="text-slate-500 uppercase tracking-wider mb-2">Contact</p>
+                            <p>Name: {guide.contactName || "Not set"}</p>
+                            <p>Email: {guide.contactEmail || "Not set"}</p>
+                            <p>Website: {guide.website || "Not set"}</p>
+                          </div>
+                        </div>
+
+                        {guide.terrainNotes && (
+                          <div className="text-xs text-slate-300 mt-4">
+                            <p className="text-slate-500 uppercase tracking-wider mb-1">Terrain Notes</p>
+                            <p className="whitespace-pre-wrap">{guide.terrainNotes}</p>
+                          </div>
+                        )}
+
+                        {guide.description && (
+                          <div className="text-xs text-slate-300 mt-4">
+                            <p className="text-slate-500 uppercase tracking-wider mb-1">Description</p>
+                            <p className="whitespace-pre-wrap">{guide.description}</p>
+                          </div>
+                        )}
+
+                        {/* Per-distance guide details */}
+                        {Array.isArray(guide.distances) && guide.distances.length > 0 && (
+                          <div className="mt-6 border-t border-slate-700 pt-4">
+                            <p className="text-slate-500 uppercase tracking-wider text-xs mb-3">Per-Distance Details</p>
+                            {guide.distances.map((dist, idx) => (
+                              <div key={idx} className="bg-emerald-950/30 border border-emerald-500/20 rounded-xl p-4 mb-3">
+                                <p className="text-emerald-400 text-xs font-semibold uppercase tracking-wider mb-2">
+                                  {dist.label || dist.raceTitle || `Distance #${idx + 1}`}
+                                </p>
+                                <div className="grid grid-cols-2 gap-2 text-xs text-slate-300">
+                                  <p>Price: ${dist.price || 0}</p>
+                                  <p>Start Time: {dist.startTime || "N/A"}</p>
+                                  <p>Elevation: {dist.elevationGain || "N/A"}</p>
+                                  <p>Cutoff: {dist.cutoffTime || "N/A"}</p>
+                                  <p>Capacity: {dist.capacity || "N/A"}</p>
+                                  <p>Technicality: {dist.terrainTechnicality || "N/A"}</p>
+                                  <p>Aid Stations: {dist.aidStations || "N/A"}</p>
+                                  <p>Mandatory Gear: {dist.mandatoryGear || "N/A"}</p>
+                                  <p>Pacer Policy: {dist.pacerPolicy || "N/A"}</p>
+                                  <p>Crew Access: {dist.crewAccess || "N/A"}</p>
+                                  {dist.aidStationDetails && <p className="col-span-2">Aid Details: {dist.aidStationDetails}</p>}
+                                  {dist.terrainNotes && <p className="col-span-2">Terrain: {dist.terrainNotes}</p>}
+                                  {dist.description && <p className="col-span-2">Description: {dist.description}</p>}
+                                  {dist.gpxRouteLink && <p className="col-span-2">GPX: <a href={dist.gpxRouteLink} target="_blank" className="text-emerald-400 underline">{dist.gpxRouteLink}</a></p>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })() : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="text-slate-400">
+                        <tr>
+                          <th className="text-left py-2">Race Name</th>
+                          <th className="text-left py-2">Location</th>
+                          <th className="text-left py-2">Date</th>
+                          <th className="text-left py-2">Distances</th>
+                          <th className="text-left py-2">Status</th>
+                          <th className="text-left py-2"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {raceGuides.map((guide) => (
+                          <tr key={guide.id} className="border-t border-slate-800 hover:bg-slate-900/50 cursor-pointer" onClick={() => setSelectedGuideId(guide.id)}>
+                            <td className="py-3 text-slate-100 font-medium">{guide.name || "Unnamed"}</td>
+                            <td className="py-3 text-slate-400">{guide.location || "—"}</td>
+                            <td className="py-3 text-slate-400">{guide.date || "—"}</td>
+                            <td className="py-3 text-slate-400">{(guide.distancesOffered || []).join(", ") || "—"}</td>
+                            <td className="py-3">
+                              <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${guide.isPublished ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-slate-700 text-slate-400 border border-slate-600'}`}>
+                                {guide.isPublished ? 'Published' : 'Draft'}
+                              </span>
+                            </td>
+                            <td className="py-3">
+                              <button className="text-xs text-emerald-300">View →</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+      </div>
+            )}
+
+            {tab === "add" && (
+              <div className="glass p-6 rounded-2xl max-w-5xl mx-auto space-y-6">
+                <h3 className="text-lg font-semibold text-emerald-400 mb-2">Add Race</h3>
+
+                {/* --- Event Details --- */}
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-300 mb-3 border-b border-slate-700 pb-1">Event Details</h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400">Race Name <span className="text-red-400">*</span></label>
+                      <input className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2" value={raceForm.name} onChange={(e) => setRaceForm({ ...raceForm, name: e.target.value })} />
+    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400">Location <span className="text-red-400">*</span></label>
+                      <input className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2" placeholder="City, State" value={raceForm.location} onChange={(e) => setRaceForm({ ...raceForm, location: e.target.value })} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400">Race Date</label>
+                      <input type="date" className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2" value={raceForm.date} onChange={(e) => setRaceForm({ ...raceForm, date: e.target.value })} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400">Slogan / Tagline</label>
+                      <input className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2" value={raceForm.slogan} onChange={(e) => setRaceForm({ ...raceForm, slogan: e.target.value })} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400">Registration Start Date</label>
+                      <input type="date" className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2" value={raceForm.registrationStartDate} onChange={(e) => setRaceForm({ ...raceForm, registrationStartDate: e.target.value })} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400">Registration End Date</label>
+                      <input type="date" className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2" value={raceForm.registrationEndDate} onChange={(e) => setRaceForm({ ...raceForm, registrationEndDate: e.target.value })} />
+                    </div>
+                    <div className="col-span-2 flex flex-col gap-1">
+                      <label className="text-xs text-slate-400">Race Description <span className="text-red-400">*</span></label>
+                      <textarea className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 min-h-[100px]" value={raceForm.description} onChange={(e) => setRaceForm({ ...raceForm, description: e.target.value })} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* --- Images --- */}
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-300 mb-3 border-b border-slate-700 pb-1">Images</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <ImageUploadField
+                      label="Featured Image"
+                      emoji="📷"
+                    value={raceForm.featuredImageUrl}
+                      onChange={(url) => setRaceForm(prev => ({ ...prev, featuredImageUrl: url }))}
+                    />
+                    <ImageUploadField
+                      label="Race Logo"
+                      emoji="🏔️"
+                    value={raceForm.logoUrl}
+                      onChange={(url) => setRaceForm(prev => ({ ...prev, logoUrl: url }))}
+                  />
+    </div>
+                </div>
+
+                {/* --- Distances --- */}
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-300 mb-3 border-b border-slate-700 pb-1">Distances</h4>
+                  {raceDistances.map((dist, idx) => (
+                    <div key={idx} className="bg-slate-900/50 border border-slate-800 rounded-xl p-4 mb-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-sm font-semibold text-emerald-400">Distance #{idx + 1}</span>
+                        {raceDistances.length > 1 && (
+                          <button onClick={() => removeRaceDistance(idx)} className="text-red-400 text-xs hover:text-red-300">Remove</button>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Race Title (tab label)</label>
+                          <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.raceTitle} onChange={(e) => updateRaceDistance(idx, 'raceTitle', e.target.value)} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Distance Label (e.g. 50K, 100M)</label>
+                          <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.label} onChange={(e) => updateRaceDistance(idx, 'label', e.target.value)} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Price ($)</label>
+                          <input type="number" className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.price} onChange={(e) => updateRaceDistance(idx, 'price', e.target.value)} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Start Time</label>
+                          <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" placeholder="e.g. 6:00 AM" value={dist.startTime} onChange={(e) => updateRaceDistance(idx, 'startTime', e.target.value)} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Elevation Gain</label>
+                          <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" placeholder="e.g. 15,000 ft" value={dist.elevationGain} onChange={(e) => updateRaceDistance(idx, 'elevationGain', e.target.value)} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Cutoff Time</label>
+                          <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" placeholder="e.g. 30 hours" value={dist.cutoffTime} onChange={(e) => updateRaceDistance(idx, 'cutoffTime', e.target.value)} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Capacity</label>
+                          <input type="number" className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.capacity} onChange={(e) => updateRaceDistance(idx, 'capacity', e.target.value)} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Terrain Technicality (1-5)</label>
+                          <input type="number" min="1" max="5" className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.terrainTechnicality} onChange={(e) => updateRaceDistance(idx, 'terrainTechnicality', e.target.value)} />
+                        </div>
+                        <div className="col-span-2 flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">GPX Route Link</label>
+                          <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" placeholder="https://..." value={dist.gpxRouteLink} onChange={(e) => updateRaceDistance(idx, 'gpxRouteLink', e.target.value)} />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  <button onClick={addRaceDistance} className="text-emerald-400 text-sm hover:text-emerald-300">+ Add Another Distance</button>
+                </div>
+
+                {/* --- Race Guide Toggle --- */}
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-300 mb-3 border-b border-slate-700 pb-1">🗺️ Race Guide</h4>
+                  <div className="flex items-center gap-3 mb-4">
+        <button
+                      type="button"
+                      onClick={() => setRaceForm({ ...raceForm, guideOptIn: !raceForm.guideOptIn })}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${raceForm.guideOptIn ? 'bg-emerald-500' : 'bg-slate-700'}`}
+                    >
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${raceForm.guideOptIn ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                    <span className={`text-sm font-medium ${raceForm.guideOptIn ? 'text-emerald-400' : 'text-slate-400'}`}>
+                      {raceForm.guideOptIn ? 'Race Guide Included' : 'No Race Guide'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mb-3">When enabled, per-distance guide fields appear below each distance card and a Race Guide document is created.</p>
+
+                  {raceForm.guideOptIn && raceDistances.map((dist, idx) => (
+                    <div key={`guide-${idx}`} className="bg-emerald-950/30 border border-emerald-500/20 rounded-xl p-4 mb-4">
+                      <p className="text-emerald-400 text-xs font-semibold uppercase tracking-wider mb-3">🗺️ Guide — {dist.label || dist.raceTitle || `Distance #${idx + 1}`}</p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Aid Stations (#)</label>
+                          <input type="number" className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.aidStations} onChange={(e) => updateRaceDistance(idx, 'aidStations', e.target.value)} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Mandatory Gear</label>
+                          <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.mandatoryGear} onChange={(e) => updateRaceDistance(idx, 'mandatoryGear', e.target.value)} />
+                        </div>
+                        <div className="col-span-2 flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Aid Station Details</label>
+                          <textarea className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm min-h-[60px]" value={dist.aidStationDetails} onChange={(e) => updateRaceDistance(idx, 'aidStationDetails', e.target.value)} />
+                        </div>
+                        <div className="col-span-2 flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Terrain Notes</label>
+                          <textarea className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm min-h-[60px]" value={dist.terrainNotes} onChange={(e) => updateRaceDistance(idx, 'terrainNotes', e.target.value)} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Pacer Policy</label>
+                          <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.pacerPolicy} onChange={(e) => updateRaceDistance(idx, 'pacerPolicy', e.target.value)} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Crew Access</label>
+                          <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.crewAccess} onChange={(e) => updateRaceDistance(idx, 'crewAccess', e.target.value)} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Crew Parking</label>
+                          <input className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm" value={dist.crewParking} onChange={(e) => updateRaceDistance(idx, 'crewParking', e.target.value)} />
+                        </div>
+                        <div className="col-span-2 flex flex-col gap-1">
+                          <label className="text-xs text-slate-400">Distance Description</label>
+                          <textarea className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm min-h-[60px]" value={dist.description} onChange={(e) => updateRaceDistance(idx, 'description', e.target.value)} />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* --- Logistics --- */}
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-300 mb-3 border-b border-slate-700 pb-1">Logistics</h4>
+                  <div className="grid grid-cols-1 gap-4">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400">Check-In Details</label>
+                      <textarea className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 min-h-[80px]" value={raceForm.checkInDetails} onChange={(e) => setRaceForm({ ...raceForm, checkInDetails: e.target.value })} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400">Refund / Deferral Terms <span className="text-red-400">*</span></label>
+                      <textarea className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 min-h-[80px]" value={raceForm.refundTerms} onChange={(e) => setRaceForm({ ...raceForm, refundTerms: e.target.value })} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* --- Contact --- */}
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-300 mb-3 border-b border-slate-700 pb-1">Contact Information</h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400">Contact Name</label>
+                      <input className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2" value={raceForm.contactName} onChange={(e) => setRaceForm({ ...raceForm, contactName: e.target.value })} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400">Contact Email</label>
+                      <input type="email" className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2" value={raceForm.contactEmail} onChange={(e) => setRaceForm({ ...raceForm, contactEmail: e.target.value })} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400">Contact Phone</label>
+                      <input className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2" value={raceForm.contactPhone} onChange={(e) => setRaceForm({ ...raceForm, contactPhone: e.target.value })} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400">Race Website</label>
+                      <input className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2" placeholder="https://..." value={raceForm.website} onChange={(e) => setRaceForm({ ...raceForm, website: e.target.value })} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400">Social Media</label>
+                      <input className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2" value={raceForm.socialMedia} onChange={(e) => setRaceForm({ ...raceForm, socialMedia: e.target.value })} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* --- Additional Notes --- */}
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-300 mb-3 border-b border-slate-700 pb-1">Additional</h4>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-slate-400">Additional Notes</label>
+                    <textarea className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 min-h-[80px]" value={raceForm.notes} onChange={(e) => setRaceForm({ ...raceForm, notes: e.target.value })} />
+                  </div>
+                </div>
+
+                {/* --- Visibility + Submit --- */}
+                <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <input type="checkbox" checked={raceForm.isVisibleOnApp === true} onChange={(e) => setRaceForm({ ...raceForm, isVisibleOnApp: e.target.checked })} />
+                  Show this race on the app
+                </label>
+                <button onClick={handleAddRace} className="bg-emerald-500 text-white px-6 py-2 rounded-lg font-semibold hover:bg-emerald-600 transition">
+                  Add Race
+        </button>
+    </div>
+            )}
+          </main>
+  </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<AdminPortal />);
+  </script>
+</body>
+</html>
+

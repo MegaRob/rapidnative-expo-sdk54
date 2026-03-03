@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TrailMatch Race Info</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            emerald: {
+              500: "#10b981",
+            },
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    .glass {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid rgba(16, 185, 129, 0.12);
+      box-shadow: 0 10px 30px rgba(2, 6, 23, 0.7);
+      backdrop-filter: blur(16px);
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div id="root" class="max-w-5xl mx-auto px-6 py-10"></div>
+
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyAcKYEhZyUgwUV58uWEVbI4Gwkn65miHt4",
+      authDomain: "trailmatch-49203553-49000.firebaseapp.com",
+      projectId: "trailmatch-49203553-49000",
+      storageBucket: "trailmatch-49203553-49000.firebasestorage.app",
+      messagingSenderId: "1048323489461",
+      appId: "1:1048323489461:web:e3c514fcf0d7748ef848fc"
+    };
+
+    const infoApp = firebase.apps.find((app) => app.name === "race-info")
+      ? firebase.app("race-info")
+      : firebase.initializeApp(firebaseConfig, "race-info");
+    const db = infoApp.firestore();
+
+    const params = new URLSearchParams(window.location.search);
+    const raceId = params.get("raceId") || params.get("id");
+
+    const fallbackImage =
+      "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=1200&auto=format&fit=crop&q=70";
+
+    function normalizeImageUrl(value) {
+      if (typeof value !== "string") return "";
+      const trimmed = value.trim().replace(/^['"]+|['"]+$/g, "");
+      if (!trimmed) return "";
+      // Don't encodeURI URLs that are already valid — it double-encodes %2F in Firebase Storage URLs
+      if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
+      if (trimmed.startsWith("//")) return "https:" + trimmed;
+      if (trimmed.startsWith("www.")) return "https://" + trimmed;
+      const encoded = encodeURI(trimmed);
+      if (/^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(\/|$)/.test(encoded)) {
+        return `https://${encoded}`;
+      }
+      return "";
+    }
+
+    function getDisplayDate(value) {
+      if (!value) return "TBD";
+      if (typeof value === "string") return value;
+      if (value?.seconds) return new Date(value.seconds * 1000).toLocaleDateString();
+      if (value?.toDate) return value.toDate().toLocaleDateString();
+      return "TBD";
+    }
+
+    function renderError(message) {
+      document.getElementById("root").innerHTML = `
+        <div class="glass rounded-2xl p-8 text-center">
+          <h1 class="text-2xl font-semibold text-emerald-400 mb-3">Race Info</h1>
+          <p class="text-slate-300">${message}</p>
+        </div>
+      `;
+    }
+
+    function renderRace(data) {
+      const name = data?.name || "Race";
+      const location = data?.location || "Location TBD";
+      const date = getDisplayDate(data?.date);
+      const image =
+        normalizeImageUrl(data?.imageUrl) ||
+        normalizeImageUrl(data?.image) ||
+        normalizeImageUrl(data?.featuredImageUrl) ||
+        fallbackImage;
+      const distances = Array.isArray(data?.distancesOffered)
+        ? data.distancesOffered
+        : typeof data?.distance === "string"
+          ? [data.distance]
+          : [];
+      const elevation = data?.elevationGain || data?.elevation || "TBD";
+      const elevationProfiles = data?.elevationProfiles || "";
+      const startTime = data?.startTime || data?.start_time || "TBD";
+      const cutoffTime = data?.cutoffTime || "TBD";
+      const aidStations = data?.aidStations || "TBD";
+      const aidStationDetails = data?.aidStationDetails || "Aid station details coming soon.";
+      const mandatoryGear = data?.mandatoryGear || "Mandatory gear coming soon.";
+      const checkInDetails = data?.checkInDetails || "Check-in details coming soon.";
+      const terrainNotes = data?.terrainNotes || "Terrain details coming soon.";
+      const pacerPolicy = data?.pacerPolicy || "Pacer policy coming soon.";
+      const crewAccess = data?.crewAccess || "Crew access details coming soon.";
+      const crewParking = data?.crewParking || "Crew parking details coming soon.";
+      const gpxRouteLink = data?.gpxRouteLink || "";
+      const website = data?.website || "";
+      const description = data?.description || "Race description coming soon.";
+
+      document.getElementById("root").innerHTML = `
+        <header class="glass rounded-2xl p-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <p class="text-xs uppercase tracking-widest text-emerald-300">Race Info</p>
+            <h1 class="text-3xl font-semibold text-emerald-400">${name}</h1>
+            <p class="text-sm text-slate-300 mt-1">${date} · ${location}</p>
+          </div>
+          <img src="${image}" alt="${name}" class="w-28 h-20 object-cover rounded-xl border border-emerald-500/30" />
+        </header>
+
+        <section class="glass rounded-2xl p-6 mt-8">
+          <h2 class="text-xl font-semibold text-emerald-300 mb-4">Quick Overview</h2>
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+            <div class="bg-slate-900/70 rounded-xl p-4">
+              <p class="text-slate-400 uppercase tracking-wider text-xs">Distance</p>
+              <p class="text-lg font-semibold">${distances.length ? distances.join(", ") : "TBD"}</p>
+            </div>
+            <div class="bg-slate-900/70 rounded-xl p-4">
+              <p class="text-slate-400 uppercase tracking-wider text-xs">Elevation Gain</p>
+              <p class="text-lg font-semibold">${elevation}</p>
+            </div>
+            <div class="bg-slate-900/70 rounded-xl p-4">
+              <p class="text-slate-400 uppercase tracking-wider text-xs">Aid Stations</p>
+              <p class="text-lg font-semibold">${aidStations}</p>
+            </div>
+            <div class="bg-slate-900/70 rounded-xl p-4">
+              <p class="text-slate-400 uppercase tracking-wider text-xs">Cutoff</p>
+              <p class="text-lg font-semibold">${cutoffTime}</p>
+            </div>
+            <div class="bg-slate-900/70 rounded-xl p-4">
+              <p class="text-slate-400 uppercase tracking-wider text-xs">Race Date</p>
+              <p class="text-lg font-semibold">${date}</p>
+            </div>
+            <div class="bg-slate-900/70 rounded-xl p-4">
+              <p class="text-slate-400 uppercase tracking-wider text-xs">Location</p>
+              <p class="text-lg font-semibold">${location}</p>
+            </div>
+            <div class="bg-slate-900/70 rounded-xl p-4">
+              <p class="text-slate-400 uppercase tracking-wider text-xs">Start Time</p>
+              <p class="text-lg font-semibold">${startTime}</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="glass rounded-2xl p-6 mt-8">
+          <h3 class="text-lg font-semibold text-emerald-300 mb-3">Race Day Essentials</h3>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-slate-200">
+            <div class="bg-slate-900/70 rounded-xl p-4">
+              <p class="text-slate-400 uppercase tracking-wider text-xs mb-1">Mandatory Gear</p>
+              <p class="whitespace-pre-line">${mandatoryGear}</p>
+            </div>
+            <div class="bg-slate-900/70 rounded-xl p-4">
+              <p class="text-slate-400 uppercase tracking-wider text-xs mb-1">Check-In</p>
+              <p class="whitespace-pre-line">${checkInDetails}</p>
+            </div>
+            <div class="bg-slate-900/70 rounded-xl p-4">
+              <p class="text-slate-400 uppercase tracking-wider text-xs mb-1">Start Time</p>
+              <p>${startTime}</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="glass rounded-2xl p-6 mt-8">
+          <h3 class="text-lg font-semibold text-emerald-300 mb-3">Course Profile</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-slate-200">
+            <div class="bg-slate-900/70 rounded-xl p-4">
+              <p class="text-slate-400 uppercase tracking-wider text-xs mb-1">Elevation by Segment</p>
+              <p class="whitespace-pre-line">${elevationProfiles || "Elevation by distance coming soon."}</p>
+            </div>
+            <div class="bg-slate-900/70 rounded-xl p-4">
+              <p class="text-slate-400 uppercase tracking-wider text-xs mb-1">Terrain Notes</p>
+              <p class="whitespace-pre-line">${terrainNotes}</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="glass rounded-2xl p-6 mt-8">
+          <h3 class="text-lg font-semibold text-emerald-300 mb-3">Aid Stations</h3>
+          <p class="text-sm text-slate-300 whitespace-pre-line">${aidStationDetails}</p>
+        </section>
+
+        <section class="glass rounded-2xl p-6 mt-8 space-y-4">
+          <h3 class="text-lg font-semibold text-emerald-300">Pacer + Crew Rules</h3>
+          <div>
+            <p class="text-slate-400 uppercase tracking-wider text-xs mb-1">Pacers</p>
+            <p class="text-sm text-slate-200">${pacerPolicy}</p>
+          </div>
+          <div>
+            <p class="text-slate-400 uppercase tracking-wider text-xs mb-1">Crew Access</p>
+            <p class="text-sm text-slate-200">${crewAccess}</p>
+          </div>
+          <div>
+            <p class="text-slate-400 uppercase tracking-wider text-xs mb-1">Crew Parking</p>
+            <p class="text-sm text-slate-200">${crewParking}</p>
+          </div>
+        </section>
+
+        <section class="glass rounded-2xl p-6 mt-8">
+          <h3 class="text-lg font-semibold text-emerald-300 mb-3">Race Notes</h3>
+          <p class="text-sm text-slate-300 whitespace-pre-line">${description}</p>
+          ${gpxRouteLink ? `<p class="mt-4 text-sm"><a class="text-emerald-300 hover:underline" href="${gpxRouteLink}" target="_blank" rel="noreferrer">Download GPX Route</a></p>` : ""}
+          ${website ? `<p class="mt-2 text-sm"><a class="text-emerald-300 hover:underline" href="${website}" target="_blank" rel="noreferrer">Race Website</a></p>` : ""}
+        </section>
+      `;
+    }
+
+    if (!raceId) {
+      renderError("Missing raceId. Add ?raceId=YOUR_RACE_ID to the URL.");
+    } else {
+      db.collection("trails").doc(raceId).get()
+        .then((docSnap) => {
+          if (!docSnap.exists) {
+            renderError("Race not found.");
+            return;
+          }
+          renderRace(docSnap.data());
+        })
+        .catch(() => renderError("Unable to load race details."));
+    }
+  </script>
+</body>
+</html>

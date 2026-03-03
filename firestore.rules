@@ -1,0 +1,290 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAdmin() {
+      return request.auth != null &&
+        (request.auth.uid == 'gveHJNWFRgZKj0qz8ZOJuT976j13');
+    }
+
+    function isDirector(trailId) {
+      return request.auth != null &&
+        get(/databases/$(database)/documents/trails/$(trailId)).data.directorId == request.auth.uid;
+    }
+    
+    // --- USERS COLLECTION ---
+    match /users/{userId} {
+      // Allow authenticated users to read their own profile document
+      allow read: if request.auth != null;
+      // Allow user to write (create, update, delete) to their own doc for profile updates
+      allow write: if request.auth != null && request.auth.uid == userId;
+      
+      // --- ADVANCED CHAT NOTIFICATION RULE ---
+      // Allow ANY logged-in user to update *only* the 'hasUnreadMessages' field on ANY user's doc.
+      allow update: if request.auth != null && (
+        request.auth.uid == userId || // Allow full update if it's their own profile
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hasUnreadMessages']) // Allow cross-user update for notification
+      );
+      
+      // Subcollections (savedRaces, dislikedRaces)
+      match /savedRaces/{raceId} {
+        allow read, create, delete: if request.auth != null && request.auth.uid == userId;
+        allow update: if false;
+      }
+      match /dislikedRaces/{raceId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+    // --- END USERS COLLECTION ---
+    
+    // --- TRAILS COLLECTION (ADMIN WRITE FIX) ---
+    match /trails/{trailId} {
+      allow read: if request.auth != null;
+      // Allow admin to create new trails (isDirector can't work on create since doc doesn't exist yet)
+      allow create: if isAdmin();
+      // Allow admin or the assigned director to update/delete existing trails
+      allow update, delete: if isAdmin() || isDirector(trailId);
+    }
+    // --- END TRAILS COLLECTION ---
+
+    // --- RACE GUIDES COLLECTION ---
+    match /raceGuides/{guideId} {
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
+    }
+    // --- END RACE GUIDES COLLECTION ---
+    
+    // --- OTHER COLLECTIONS ---
+    match /matches/{matchId} {
+      // Allow authenticated users to create their own matches
+      allow create: if request.auth != null && 
+        request.auth.uid == request.resource.data.userId;
+      
+      // Allow authenticated users to read matches (needed for queries by userId and trailId)
+      // Matches are discoverable to show "other runners going" on race details
+      allow read: if request.auth != null;
+      
+      // Allow users to delete their own matches (for unlike/unsave functionality)
+      allow delete: if request.auth != null && 
+        resource.data.userId == request.auth.uid;
+      
+      // Allow users to update their own matches (for pinning functionality)
+      allow update: if request.auth != null && 
+        resource.data.userId == request.auth.uid &&
+        // Only allow updating isPinned field
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isPinned']);
+    }
+    
+    // --- CHATS COLLECTION (FIXED FOR READ/CREATE) ---
+    match /chats/{chatId} {
+      // Allow read if the authenticated user's ID is one of the two IDs in the chatId
+      // This works even if the document doesn't exist yet (for checking before creation)
+      allow read: if request.auth != null && request.auth.uid in chatId.split('_');
+      
+      // Allow create if the authenticated user's ID is one of the two IDs in the chatId
+      allow create: if request.auth != null && request.auth.uid in chatId.split('_');
+      
+      // Allow update if the authenticated user is a participant (check chatId or userIds array)
+      // Also allow updating denormalized fields (participantNames, participantAvatars, lastMessage, etc.)
+      allow update: if request.auth != null && (
+        request.auth.uid in chatId.split('_') ||
+        (resource != null && request.auth.uid in resource.data.get('userIds', []))
+      ) && (
+        // Allow updating any field, but ensure userIds array integrity is maintained
+        // Denormalized fields (participantNames, participantAvatars, lastMessage, etc.) are allowed
+        true
+      );
+      
+      // Allow delete if the authenticated user is a participant
+      allow delete: if request.auth != null && (
+        request.auth.uid in chatId.split('_') ||
+        (resource != null && request.auth.uid in resource.data.get('userIds', []))
+      );
+      
+      match /messages/{messageId} {
+        // Allow read/create if user is a participant (check chatId format)
+        allow read, create: if request.auth != null && request.auth.uid in chatId.split('_');
+        // Allow participants to update status only (e.g., received)
+        allow update: if request.auth != null &&
+          request.auth.uid in chatId.split('_') &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+        allow delete: if false;
+      }
+    }
+    // --- END CHATS COLLECTION ---
+    
+    // --- RACE REQUESTS COLLECTION ---
+    match /raceRequests/{requestId} {
+      // Allow anyone (public) to create race requests (no authentication required)
+      allow create: if true;
+      
+      // Only allow authenticated admins to read requests
+      allow read: if request.auth != null && request.auth.uid == 'gveHJNWFRgZKj0qz8ZOJuT976j13';
+      
+      // Only allow authenticated admins to update requests (for approval/rejection)
+      allow update: if request.auth != null && request.auth.uid == 'gveHJNWFRgZKj0qz8ZOJuT976j13';
+      
+      // No one can delete requests (keep for audit trail)
+      allow delete: if false;
+    }
+    // --- END RACE REQUESTS COLLECTION ---
+    
+    // --- BLOCKS COLLECTION ---
+    match /blocks/{blockId} {
+      // Allow authenticated users to read blocks where they are involved
+      // For collection queries with where('blockerId'/'blockedId'), Firestore checks resource.data
+      allow read: if request.auth != null && (
+        // Check document ID pattern (works for direct reads)
+        request.auth.uid in blockId.split('_') ||
+        // Check document data fields (works for collection queries)
+        (resource != null && (
+          request.auth.uid == resource.data.blockerId ||
+          request.auth.uid == resource.data.blockedId
+        ))
+      );
+      
+      // Allow users to create blocks where they are the blocker
+      // Use request.resource.data for create operations (resource.data is for existing docs)
+      allow create: if request.auth != null && 
+        request.auth.uid == request.resource.data.blockerId;
+      
+      // Allow users to delete blocks where they are the blocker
+      allow delete: if request.auth != null && 
+        request.auth.uid in blockId.split('_') &&
+        resource != null && 
+        request.auth.uid == resource.data.blockerId;
+      
+      // No updates allowed (blocks are immutable)
+      allow update: if false;
+    }
+    // --- END BLOCKS COLLECTION ---
+    
+    // --- REPORTS COLLECTION ---
+    match /artifacts/{appId}/public/data/reports/{reportId} {
+      // Allow authenticated users to create reports
+      allow create: if request.auth != null && 
+        request.auth.uid == request.resource.data.reporterId;
+      
+      // Only allow admins to read reports
+      allow read: if request.auth != null && request.auth.uid == 'gveHJNWFRgZKj0qz8ZOJuT976j13';
+      
+      // Only allow admins to update report status
+      allow update: if request.auth != null && request.auth.uid == 'gveHJNWFRgZKj0qz8ZOJuT976j13';
+      
+      // No one can delete reports (keep for audit trail)
+      allow delete: if false;
+    }
+    // --- END REPORTS COLLECTION ---
+
+    // --- ARTIFACTS USERS (BETA AGREEMENT) ---
+    match /artifacts/{appId}/users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    // --- END ARTIFACTS USERS ---
+
+    // --- COMMUNITY POSTS ---
+    match /artifacts/{appId}/public/data/community_posts/{postId} {
+      // Allow authenticated users to read all community posts
+      allow read: if request.auth != null;
+
+      // Allow authenticated users to create their own posts
+      allow create: if request.auth != null &&
+        request.resource.data.authorId == request.auth.uid;
+
+      // Allow author to update/delete their own post
+      allow update, delete: if request.auth != null &&
+        resource.data.authorId == request.auth.uid;
+
+      // Allow authenticated users to update interactionCount only
+      allow update: if request.auth != null &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['interactionCount']);
+    }
+    // --- END COMMUNITY POSTS ---
+
+    // --- COMMUNITY INTEREST ---
+    match /artifacts/{appId}/public/data/community_posts/{postId}/interested/{userId} {
+      allow read: if request.auth != null;
+      allow create, update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+    // --- END COMMUNITY INTEREST ---
+
+    // --- DETAILED REGISTRATIONS (ARTIFACTS) ---
+    match /artifacts/{appId}/public/data/registrations/{registrationId} {
+      // Allow authenticated users to create their own registrations
+      allow create: if request.auth != null &&
+        request.auth.uid == request.resource.data.userId;
+
+      // Allow users to read their own registrations, admins, and directors
+      allow read: if request.auth != null &&
+        (request.auth.uid == resource.data.userId ||
+         isAdmin() ||
+         isDirector(resource.data.trailId));
+
+      // Allow updates by admins/directors or the owner (e.g., check-in, bib)
+      allow update: if request.auth != null &&
+        (request.auth.uid == resource.data.userId ||
+         isAdmin() ||
+         isDirector(resource.data.trailId));
+
+      // Allow users to delete their own registrations
+      allow delete: if request.auth != null &&
+        request.auth.uid == resource.data.userId;
+    }
+    // --- END DETAILED REGISTRATIONS (ARTIFACTS) ---
+    
+    // --- REGISTRATIONS COLLECTION ---
+    match /registrations/{registrationId} {
+      // Allow authenticated users to read their own registrations
+      // Also allow unauthenticated reads for QR check-in lookup
+      allow read: if true;
+      
+      // Allow authenticated users to create their own registrations
+      allow create: if request.auth != null && 
+        request.auth.uid == request.resource.data.userId;
+      
+      // Allow users to update their own registrations, directors, or
+      // unauthenticated QR check-in (only checkedIn and checkedInAt fields)
+      allow update: if request.auth != null && 
+        (request.auth.uid == resource.data.userId ||
+         isDirector(resource.data.trailId))
+        ||
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['checkedIn', 'checkedInAt']);
+      
+      // Allow users to delete their own registrations
+      allow delete: if request.auth != null && 
+        request.auth.uid == resource.data.userId;
+    }
+    // --- END REGISTRATIONS COLLECTION ---
+    
+    // --- COMPLETED RACES COLLECTION ---
+    match /completed_races/{completedId} {
+      // Allow authenticated users to read their own completed races
+      allow read: if request.auth != null && 
+        (request.auth.uid == resource.data.userId || 
+         isAdmin() ||
+         isDirector(resource.data.trailId));
+      
+      // Allow authenticated users to create their own completed races
+      allow create: if request.auth != null && 
+        (request.auth.uid == request.resource.data.userId ||
+         isDirector(request.resource.data.trailId));
+      
+      // Allow users to update their own completed races (e.g., add finish time, photo)
+      allow update: if request.auth != null && 
+        (request.auth.uid == resource.data.userId ||
+         isDirector(resource.data.trailId));
+      
+      // Allow users to delete their own completed races
+      allow delete: if request.auth != null && 
+        request.auth.uid == resource.data.userId;
+    }
+    // --- END COMPLETED RACES COLLECTION ---
+    
+  }
+}
+
+
+
+
+
+

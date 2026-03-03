@@ -1,50 +1,92 @@
-# Welcome to your Expo app 👋
+# TrailMatch 🏃‍♂️🏔️
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+TrailMatch is a dynamic trail running app that helps runners discover exciting races and connect with fellow trail enthusiasts. Using an intuitive swipe interface, users can explore curated trail races, view detailed course information, and match with potential running partners.
 
-## Get started
+## Style Guide
 
-1. Install dependencies
+### Theme and Color Scheme
 
-   ```bash
-   npm install
-   ```
+**Brand Colors:**
+- Primary: #8BC34A (Trail Green)
+- Secondary: #4CAF50 (Forest Green)
+- Accent: #34C759 (Success Green)
+- Background: #1A1F25 (Dark Theme)
+- Surface: #2C3440 (Card Background)
+- Text Primary: #FFFFFF
+- Text Secondary: #A0AEC0
 
-2. Start the app
+**Theme:**
+- Style: Modern Dark Theme
+- Mood: Adventurous & Professional
+- Visual Weight: Bold with ample breathing space
 
-   ```bash
-   npx expo start
-   ```
+**Spacing:**
+- Border Radius: rounded-3xl for cards, rounded-full for buttons
+- Padding: p-4 (base), p-6 (content areas)
+- Margins: m-4 (base), m-6 (sections)
 
-In the output, you'll find options to open the app in a
+## Features
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+### Current Features
+- Modern swipeable card interface for race discovery
+- Detailed race information display
+- Like/Pass functionality for race selection
+- Clean, intuitive user interface
+- High-quality race imagery
+- Essential race details (distance, elevation, participants)
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+### Planned Features
+- User profile creation and management
+- Race matching based on preferences
+- Chat functionality with matched runners
+- Detailed race pages with course maps
+- Race registration integration
+- Social features for runner connections
 
-## Get a fresh project
+## Technologies Used
 
-When you're ready, run:
+- React Native
+- Expo Router for navigation
+- NativeWind for styling
+- Expo Linear Gradient for UI effects
+- Lucide Icons for consistent iconography
 
+## Installation Instructions
+
+1. Clone the repository
 ```bash
-npm run reset-project
+git clone https://github.com/yourusername/trailmatch.git
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+2. Install dependencies
+```bash
+cd trailmatch
+npm install
+```
 
-## Learn more
+3. Start the development server
+```bash
+npm start
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+## Usage Instructions
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+1. Launch the app
+2. Browse through race cards by swiping left (pass) or right (like)
+3. View detailed race information on each card
+4. Use the action buttons to like or pass on races
+5. Match with races that fit your preferences
 
-## Join the community
+## Development
 
-Join our community of developers creating universal apps.
+### Prerequisites
+- Node.js (v14 or higher)
+- npm or yarn
+- Expo CLI
+- iOS Simulator or Android Emulator
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+### Development Commands
+- `npm start`: Start the development server
+- `npm run ios`: Run on iOS simulator
+- `npm run android`: Run on Android emulator
+```

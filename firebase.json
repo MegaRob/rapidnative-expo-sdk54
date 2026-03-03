@@ -1,0 +1,68 @@
+{
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "functions": {
+    "source": "functions"
+  },
+  "hosting": {
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**",
+      "app/**",
+      "assets/**",
+      "components/**",
+      "constants/**",
+      "functions/**",
+      "hooks/**",
+      "scripts/**",
+      "src/**",
+      "*.ts",
+      "*.tsx",
+      "*.js",
+      "*.json",
+      "*.config.js",
+      "*.config.ts",
+      "package*.json",
+      "README.md",
+      "eas.json"
+    ],
+    "rewrites": [
+      {
+        "source": "/admin",
+        "destination": "/admin-portal.html"
+      },
+      {
+        "source": "/director",
+        "destination": "/director-portal.html"
+      },
+      {
+        "source": "/submit-race",
+        "destination": "/race-submission.html"
+      },
+      {
+        "source": "/runners",
+        "destination": "/marketing.html"
+      },
+      {
+        "source": "/directors",
+        "destination": "/director-marketing.html"
+      },
+      {
+        "source": "/checkin",
+        "destination": "/checkin.html"
+      },
+      {
+        "source": "**",
+        "destination": "/admin-portal.html"
+      }
+    ]
+  }
+}
+
+

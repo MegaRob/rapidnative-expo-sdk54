@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TrailMatch Director Portal | Run Your Race</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            emerald: {
+              500: '#10b981',
+            },
+          },
+        },
+      },
+    };
+  </script>
+</head>
+<body class="bg-slate-950 text-white">
+  <header class="border-b border-emerald-500/10">
+    <div class="max-w-6xl mx-auto px-6 py-6 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold">
+          TM
+        </div>
+        <div>
+          <p class="text-lg font-semibold text-emerald-400">TrailMatch Director</p>
+          <p class="text-xs text-slate-400">Race operations, simplified</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <a href="#modules" class="text-sm text-slate-300">Modules</a>
+        <a href="#operations" class="text-sm text-slate-300">Operations</a>
+        <a href="#cta" class="text-sm text-slate-300">Get Started</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="max-w-6xl mx-auto px-6 py-16 grid lg:grid-cols-2 gap-10 items-center">
+      <div class="space-y-6">
+        <div class="inline-flex items-center gap-2 bg-emerald-500/10 text-emerald-300 px-4 py-2 rounded-full text-xs uppercase tracking-widest">
+          Director Command Center
+        </div>
+        <h1 class="text-4xl lg:text-5xl font-bold leading-tight">
+          Run approvals, registrations, and results from one race‑ready dashboard.
+        </h1>
+        <p class="text-slate-300 text-lg">
+          TrailMatch Director Portal gives you real‑time visibility into your roster, check‑in status,
+          and official results with instant sync to the runner app.
+        </p>
+        <div class="flex flex-wrap gap-4">
+          <a href="/director" class="bg-emerald-500 text-slate-900 px-6 py-3 rounded-full font-semibold">
+            Open Director Portal
+          </a>
+          <a href="/submit-race" class="border border-slate-700 px-6 py-3 rounded-full text-slate-200">
+            Submit a Race
+          </a>
+        </div>
+        <div class="grid grid-cols-3 gap-4 text-xs text-slate-500">
+          <div>
+            <p class="text-emerald-400 font-semibold">Real‑time</p>
+            <p>Roster sync</p>
+          </div>
+          <div>
+            <p class="text-emerald-400 font-semibold">Fast</p>
+            <p>Check‑in flow</p>
+          </div>
+          <div>
+            <p class="text-emerald-400 font-semibold">Secure</p>
+            <p>Director access</p>
+          </div>
+        </div>
+      </div>
+      <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-6">
+        <div class="bg-slate-950 rounded-[2rem] p-6 space-y-4">
+          <p class="text-xs text-slate-400 uppercase tracking-widest">Race Ops Snapshot</p>
+          <div class="flex items-center justify-between bg-slate-900 rounded-xl px-4 py-3">
+            <span class="text-slate-300">Registrations</span>
+            <span class="text-emerald-400 text-sm">312 / 500</span>
+          </div>
+          <div class="flex items-center justify-between bg-slate-900 rounded-xl px-4 py-3">
+            <span class="text-slate-300">Check‑in Progress</span>
+            <span class="text-emerald-400 text-sm">126 ready</span>
+          </div>
+          <div class="flex items-center justify-between bg-slate-900 rounded-xl px-4 py-3">
+            <span class="text-slate-300">Finishers</span>
+            <span class="text-emerald-400 text-sm">89 official</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="modules" class="max-w-6xl mx-auto px-6 py-12">
+      <div class="grid lg:grid-cols-3 gap-6">
+        <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-6">
+          <h3 class="text-xl font-semibold text-emerald-400">Overview Analytics</h3>
+          <p class="text-slate-300 mt-3">
+            Live KPIs for revenue, registration fill, check‑ins, and finisher counts.
+          </p>
+        </div>
+        <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-6">
+          <h3 class="text-xl font-semibold text-emerald-400">App Content Editor</h3>
+          <p class="text-slate-300 mt-3">
+            Update your slogan, media, technical details, and logistics with a live mobile preview.
+          </p>
+        </div>
+        <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-6">
+          <h3 class="text-xl font-semibold text-emerald-400">Roster & Privacy</h3>
+          <p class="text-slate-300 mt-3">
+            Manage your athlete roster, respect privacy flags, and export CSVs in seconds.
+          </p>
+        </div>
+        <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-6">
+          <h3 class="text-xl font-semibold text-emerald-400">Race Day Check‑In</h3>
+          <p class="text-slate-300 mt-3">
+            Assign bibs, mark arrivals, and prep the start line with a volunteer‑friendly flow.
+          </p>
+        </div>
+        <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-6">
+          <h3 class="text-xl font-semibold text-emerald-400">Results & Sync</h3>
+          <p class="text-slate-300 mt-3">
+            Enter finish times, mark official results, and push them to the runner app instantly.
+          </p>
+        </div>
+        <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-6">
+          <h3 class="text-xl font-semibold text-emerald-400">Community Boards</h3>
+          <p class="text-slate-300 mt-3">
+            Keep logistics organized with race‑specific boards for carpools, pacers, and crew support.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section id="operations" class="max-w-6xl mx-auto px-6 py-12">
+      <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-8 grid lg:grid-cols-2 gap-8">
+        <div>
+          <h2 class="text-3xl font-semibold text-emerald-400">Built for race operations</h2>
+          <p class="text-slate-300 mt-4">
+            TrailMatch streamlines approvals, director access, and race updates so you can focus on
+            delivering the race experience.
+          </p>
+          <ul class="mt-6 space-y-3 text-slate-300">
+            <li>• Approve submissions and auto‑create director logins</li>
+            <li>• Update race details across web & mobile instantly</li>
+            <li>• Secure access scoped to your race</li>
+          </ul>
+        </div>
+        <div class="bg-slate-950 rounded-[2rem] p-6">
+          <p class="text-xs text-slate-400 uppercase tracking-widest">Workflow Snapshot</p>
+          <div class="mt-4 space-y-3">
+            <div class="bg-slate-900 rounded-xl px-4 py-3">
+              <p class="text-slate-200 text-sm">Approve race submission → Director login created</p>
+              <p class="text-emerald-400 text-xs mt-2">Automated</p>
+            </div>
+            <div class="bg-slate-900 rounded-xl px-4 py-3">
+              <p class="text-slate-200 text-sm">Roster syncs live with registrations</p>
+              <p class="text-emerald-400 text-xs mt-2">Real‑time</p>
+            </div>
+            <div class="bg-slate-900 rounded-xl px-4 py-3">
+              <p class="text-slate-200 text-sm">Push official results to the app</p>
+              <p class="text-emerald-400 text-xs mt-2">One‑click</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="cta" class="max-w-6xl mx-auto px-6 py-16">
+      <div class="bg-emerald-500/10 border border-emerald-500/30 rounded-[2rem] p-10 text-center">
+        <h2 class="text-3xl font-semibold text-emerald-300">Ready to run your race like a pro?</h2>
+        <p class="text-slate-300 mt-3">
+          Submit your race and unlock the Director Portal built for race teams.
+        </p>
+        <div class="mt-6 flex justify-center gap-4 flex-wrap">
+          <a href="/submit-race" class="bg-emerald-500 text-slate-900 px-6 py-3 rounded-full font-semibold">
+            Submit a Race
+          </a>
+          <a href="/director" class="bg-slate-900 text-white px-6 py-3 rounded-full border border-slate-700">
+            Director Login
+          </a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="border-t border-slate-800">
+    <div class="max-w-6xl mx-auto px-6 py-8 text-sm text-slate-500 flex flex-col md:flex-row items-center justify-between gap-4">
+      <p>© 2026 TrailMatch. Built for race directors.</p>
+      <div class="flex gap-4">
+        <a href="/runners" class="text-slate-400">Runner Marketing</a>
+        <a href="/director" class="text-slate-400">Director Portal</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

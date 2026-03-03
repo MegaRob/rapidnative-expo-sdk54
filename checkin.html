@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TrailMatch – Race Check-In</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            emerald: { 500: '#10b981', 600: '#059669' },
+          },
+        },
+      },
+    };
+  </script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
+
+  <div id="root"></div>
+
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useEffect, useState } = React;
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyAcKYEhZyUgwUV58uWEVbI4Gwkn65miHt4",
+      authDomain: "trailmatch-49203553-49000.firebaseapp.com",
+      projectId: "trailmatch-49203553-49000",
+      storageBucket: "trailmatch-49203553-49000.firebasestorage.app",
+      messagingSenderId: "1048323489461",
+      appId: "1:1048323489461:web:e3c514fcf0d7748ef848fc"
+    };
+
+    const app = firebase.apps.find(a => a.name === "checkin-app")
+      ? firebase.app("checkin-app")
+      : firebase.initializeApp(firebaseConfig, "checkin-app");
+    const db = app.firestore();
+
+    function CheckInPage() {
+      const [status, setStatus] = useState("loading"); // loading | success | already | error | not_found
+      const [registration, setRegistration] = useState(null);
+      const [raceName, setRaceName] = useState("");
+      const [errorMsg, setErrorMsg] = useState("");
+
+      // Parse URL params
+      const params = new URLSearchParams(window.location.search);
+      const registrationId = params.get("registrationId") || "";
+      const trailId = params.get("trailId") || "";
+      const bibNumber = params.get("bib") || "";
+      const runnerName = params.get("runner") || "";
+
+      useEffect(() => {
+        const autoCheckIn = async () => {
+          if (!registrationId && !bibNumber) {
+            setStatus("not_found");
+            setErrorMsg("No registration ID provided.");
+            return;
+          }
+
+          try {
+            let regDoc = null;
+            let regData = null;
+
+            // Find the registration document
+            const directDoc = await db.collection("registrations").doc(registrationId).get();
+
+            if (directDoc.exists) {
+              regDoc = directDoc;
+              regData = directDoc.data();
+            } else {
+              // Fallback: search by trailId + bib number
+              const snapshot = await db.collection("registrations")
+                .where("trailId", "==", trailId)
+                .where("bibNumber", "==", bibNumber)
+                .get();
+
+              if (!snapshot.empty) {
+                regDoc = snapshot.docs[0];
+                regData = regDoc.data();
+              }
+            }
+
+            if (!regDoc || !regData) {
+              setStatus("not_found");
+              setErrorMsg("Registration not found. The runner may need to re-register.");
+              return;
+            }
+
+            setRegistration({ id: regDoc.id, ...regData });
+
+            // Use race name from URL params, or try fetching from Firestore
+            const urlRaceName = params.get("raceName") || "";
+            if (urlRaceName) {
+              setRaceName(urlRaceName);
+            } else if (trailId) {
+              try {
+                const trailDoc = await db.collection("trails").doc(trailId).get();
+                if (trailDoc.exists) {
+                  setRaceName(trailDoc.data().name || "");
+                }
+              } catch (e) {
+                // Trail read may fail without auth — that's fine, race name is optional
+              }
+            }
+
+            // Auto check-in immediately
+            if (regData.checkedIn) {
+              setStatus("already");
+            } else {
+              await db.collection("registrations").doc(regDoc.id).set(
+                { checkedIn: true, checkedInAt: new Date() },
+                { merge: true }
+              );
+              setStatus("success");
+            }
+          } catch (err) {
+            console.error("Check-in error:", err);
+            setStatus("error");
+            setErrorMsg("Failed to check in. Please try again.");
+          }
+        };
+
+        autoCheckIn();
+      }, []);
+
+      // Loading — auto check-in in progress
+      if (status === "loading") {
+        return (
+          <div className="text-center">
+            <div className="animate-spin w-10 h-10 border-4 border-emerald-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+            <p className="text-slate-400">Checking in runner...</p>
+          </div>
+        );
+      }
+
+      // Not found / Error
+      if (status === "not_found" || status === "error") {
+        return (
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-sm w-full text-center">
+            <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-4">
+              <span className="text-3xl">✕</span>
+            </div>
+            <h2 className="text-xl font-bold text-red-400 mb-2">
+              {status === "not_found" ? "Not Found" : "Error"}
+            </h2>
+            <p className="text-slate-400">{errorMsg}</p>
+          </div>
+        );
+      }
+
+      const displayName = registration?.fullName || runnerName || "Runner";
+      const displayBib = registration?.bibNumber || bibNumber || "----";
+      const displayDistance = registration?.distance || "";
+
+      // Already checked in
+      if (status === "already") {
+        return (
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-sm w-full text-center">
+            <div className="w-16 h-16 rounded-full bg-yellow-500/20 flex items-center justify-center mx-auto mb-4">
+              <span className="text-3xl">✓</span>
+            </div>
+            <h2 className="text-xl font-bold text-yellow-400 mb-1">Already Checked In</h2>
+            <p className="text-slate-400 text-sm mb-6">This runner was already checked in.</p>
+
+            <div className="bg-slate-950 rounded-2xl p-4 mb-3">
+              <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Runner</p>
+              <p className="text-white text-lg font-bold">{displayName}</p>
+            </div>
+            <div className="flex gap-3">
+              <div className="bg-slate-950 rounded-2xl p-4 flex-1">
+                <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Bib</p>
+                <p className="text-white text-2xl font-black">{displayBib}</p>
+              </div>
+              {displayDistance && (
+                <div className="bg-slate-950 rounded-2xl p-4 flex-1">
+                  <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Distance</p>
+                  <p className="text-white text-lg font-bold">{displayDistance}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      // Success — auto check-in completed
+      return (
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-sm w-full text-center">
+          <div className="w-20 h-20 rounded-full bg-emerald-500 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-emerald-500/30">
+            <span className="text-4xl text-white">✓</span>
+          </div>
+          {raceName && (
+            <p className="text-emerald-500 text-xs font-bold uppercase tracking-widest mb-2">{raceName}</p>
+          )}
+          <h2 className="text-2xl font-bold text-emerald-400 mb-1">Checked In!</h2>
+          <p className="text-slate-400 text-sm mb-6">Runner is good to go.</p>
+
+          <div className="bg-slate-950 rounded-2xl p-4 mb-3">
+            <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Runner</p>
+            <p className="text-white text-lg font-bold">{displayName}</p>
+          </div>
+
+          <div className="flex gap-3">
+            <div className="bg-slate-950 rounded-2xl p-4 flex-1">
+              <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Bib</p>
+              <p className="text-white text-3xl font-black">{displayBib}</p>
+            </div>
+            {displayDistance && (
+              <div className="bg-slate-950 rounded-2xl p-4 flex-1">
+                <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Distance</p>
+                <p className="text-white text-lg font-bold">{displayDistance}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<CheckInPage />);
+  </script>
+</body>
+</html>

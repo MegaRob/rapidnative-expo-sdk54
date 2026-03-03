@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TrailMatch | Discover Your Next Race</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            emerald: {
+              500: '#10b981',
+            },
+          },
+        },
+      },
+    };
+  </script>
+</head>
+<body class="bg-slate-950 text-white">
+  <header class="border-b border-emerald-500/10">
+    <div class="max-w-6xl mx-auto px-6 py-6 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold">
+          TM
+        </div>
+        <div>
+          <p class="text-lg font-semibold text-emerald-400">TrailMatch</p>
+          <p class="text-xs text-slate-400">Race discovery for runners</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <a href="#features" class="text-sm text-slate-300">Features</a>
+        <a href="#community" class="text-sm text-slate-300">Community</a>
+        <a href="#cta" class="text-sm text-slate-300">Download</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="max-w-6xl mx-auto px-6 py-16 grid lg:grid-cols-2 gap-10 items-center">
+      <div class="space-y-6">
+        <div class="inline-flex items-center gap-2 bg-emerald-500/10 text-emerald-300 px-4 py-2 rounded-full text-xs uppercase tracking-widest">
+          The Runner's Command Center
+        </div>
+        <h1 class="text-4xl lg:text-5xl font-bold leading-tight">
+          Discover ultra trail races and build your start‑line crew with TrailMatch.
+        </h1>
+        <p class="text-slate-300 text-lg">
+          Swipe through curated races, lock in your logistics, and sync with your pacers, crew, and carpools —
+          all in one place.
+        </p>
+        <div class="flex flex-wrap gap-4">
+          <button class="bg-emerald-500 text-slate-900 px-6 py-3 rounded-full font-semibold">
+            Get the App
+          </button>
+          <a href="#features" class="border border-slate-700 px-6 py-3 rounded-full text-slate-200">
+            Explore Features
+          </a>
+        </div>
+        <div class="flex items-center gap-6 text-xs text-slate-500">
+          <div>
+            <p class="text-emerald-400 font-semibold">1,200+</p>
+            <p>Races indexed</p>
+          </div>
+          <div>
+            <p class="text-emerald-400 font-semibold">30k+</p>
+            <p>Runner matches</p>
+          </div>
+          <div>
+            <p class="text-emerald-400 font-semibold">Live</p>
+            <p>Race updates</p>
+          </div>
+        </div>
+      </div>
+      <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-6">
+        <div class="bg-slate-950 rounded-[2rem] p-6">
+          <p class="text-xs text-slate-400 uppercase tracking-widest">Featured Race</p>
+          <h2 class="text-2xl font-semibold mt-3">Canyon Crest 100M</h2>
+          <p class="text-slate-400 mt-2">Flagstaff, AZ · 24,000 ft gain</p>
+          <div class="mt-6 space-y-3">
+            <div class="flex items-center justify-between bg-slate-900 rounded-xl px-4 py-3">
+              <span class="text-slate-300">Carpool Board</span>
+              <span class="text-emerald-400 text-sm">12 offers</span>
+            </div>
+            <div class="flex items-center justify-between bg-slate-900 rounded-xl px-4 py-3">
+              <span class="text-slate-300">Pacers Needed</span>
+              <span class="text-emerald-400 text-sm">5 open</span>
+            </div>
+            <div class="flex items-center justify-between bg-slate-900 rounded-xl px-4 py-3">
+              <span class="text-slate-300">Crew Support</span>
+              <span class="text-emerald-400 text-sm">8 helpers</span>
+            </div>
+          </div>
+          <button class="mt-6 w-full bg-emerald-500 text-slate-900 py-3 rounded-full font-semibold">
+            View Race Details
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section id="features" class="max-w-6xl mx-auto px-6 py-12">
+      <div class="grid lg:grid-cols-3 gap-6">
+        <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-6">
+          <h3 class="text-xl font-semibold text-emerald-400">Discover Races</h3>
+          <p class="text-slate-300 mt-3">
+            Filter by distance, elevation, and difficulty. Save races and build a personalized season.
+          </p>
+        </div>
+        <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-6">
+          <h3 class="text-xl font-semibold text-emerald-400">Smart Logistics</h3>
+          <p class="text-slate-300 mt-3">
+            Each race has its own community board for carpools, pacers, and crew coordination.
+          </p>
+        </div>
+        <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-6">
+          <h3 class="text-xl font-semibold text-emerald-400">Race Day Ready</h3>
+          <p class="text-slate-300 mt-3">
+            Get instant updates from directors, check-in data, and official results synced to the app.
+          </p>
+        </div>
+        <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-6">
+          <h3 class="text-xl font-semibold text-emerald-400">Match With Runners</h3>
+          <p class="text-slate-300 mt-3">
+            See who else is running your race, compare goals, and find training partners nearby.
+          </p>
+        </div>
+        <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-6">
+          <h3 class="text-xl font-semibold text-emerald-400">Registration & Check-In</h3>
+          <p class="text-slate-300 mt-3">
+            Register directly in-app and arrive with a clear check-in status and bib assignment.
+          </p>
+        </div>
+        <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-6">
+          <h3 class="text-xl font-semibold text-emerald-400">Official Results Sync</h3>
+          <p class="text-slate-300 mt-3">
+            Finishers appear instantly in the Completed tab with verified times and badges.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="max-w-6xl mx-auto px-6 py-12">
+      <div class="grid lg:grid-cols-2 gap-8">
+        <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-8">
+          <h3 class="text-2xl font-semibold text-emerald-400">Your race season, organized</h3>
+          <p class="text-slate-300 mt-4">
+            Track saved races, manage registrations, and stay on top of logistics in one streamlined hub.
+          </p>
+          <ul class="mt-6 space-y-3 text-slate-300">
+            <li>• Save and pin priority races</li>
+            <li>• See match counts and who’s attending</li>
+            <li>• Get alerts when a race director posts updates</li>
+          </ul>
+        </div>
+        <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-8">
+          <h3 class="text-2xl font-semibold text-emerald-400">Built for trail teams</h3>
+          <p class="text-slate-300 mt-4">
+            From planning to podium, TrailMatch connects runners, pacers, and crew without the chaos.
+          </p>
+          <ul class="mt-6 space-y-3 text-slate-300">
+            <li>• Direct chat with race connections</li>
+            <li>• Privacy controls for sensitive profiles</li>
+            <li>• Race director insights and live updates</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="community" class="max-w-6xl mx-auto px-6 py-12">
+      <div class="bg-slate-900/70 border border-slate-800 rounded-[2rem] p-8 grid lg:grid-cols-2 gap-8">
+        <div>
+          <h2 class="text-3xl font-semibold text-emerald-400">Race‑specific community boards</h2>
+          <p class="text-slate-300 mt-4">
+            Every race unlocks its own logistics hub. Post ride offers, find pacers, and coordinate crew support
+            without losing the thread.
+          </p>
+          <ul class="mt-6 space-y-3 text-slate-300">
+            <li>• Carpool offers & requests</li>
+            <li>• Pacer matching</li>
+            <li>• Crew support planning</li>
+            <li>• Direct chat with runners</li>
+          </ul>
+        </div>
+        <div class="bg-slate-950 rounded-[2rem] p-6">
+          <p class="text-xs text-slate-400 uppercase tracking-widest">Community Pulse</p>
+          <div class="mt-4 space-y-3">
+            <div class="bg-slate-900 rounded-xl px-4 py-3">
+              <p class="text-slate-200 text-sm">“Driving from Phoenix to Prescott, 2 seats open.”</p>
+              <p class="text-emerald-400 text-xs mt-2">Carpool · 4 interested</p>
+            </div>
+            <div class="bg-slate-900 rounded-xl px-4 py-3">
+              <p class="text-slate-200 text-sm">“Seeking pacer for night section, mile 50+.”</p>
+              <p class="text-emerald-400 text-xs mt-2">Pacer · 7 interested</p>
+            </div>
+            <div class="bg-slate-900 rounded-xl px-4 py-3">
+              <p class="text-slate-200 text-sm">“Crew available at Aid 3 + Finish.”</p>
+              <p class="text-emerald-400 text-xs mt-2">Crew · 5 interested</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="cta" class="max-w-6xl mx-auto px-6 py-16">
+      <div class="bg-emerald-500/10 border border-emerald-500/30 rounded-[2rem] p-10 text-center">
+        <h2 class="text-3xl font-semibold text-emerald-300">Ready to run smarter?</h2>
+        <p class="text-slate-300 mt-3">
+          Download TrailMatch to discover races, connect with runners, and keep your season organized.
+        </p>
+        <div class="mt-6 flex justify-center gap-4 flex-wrap">
+          <button class="bg-emerald-500 text-slate-900 px-6 py-3 rounded-full font-semibold">
+            Download for iOS
+          </button>
+          <button class="bg-slate-900 text-white px-6 py-3 rounded-full border border-slate-700">
+            Download for Android
+          </button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="border-t border-slate-800">
+    <div class="max-w-6xl mx-auto px-6 py-8 text-sm text-slate-500 flex flex-col md:flex-row items-center justify-between gap-4">
+      <p>© 2026 TrailMatch. Built for trail runners.</p>
+      <div class="flex gap-4">
+        <a href="/submit-race" class="text-slate-400">Submit a Race</a>
+        <a href="/director" class="text-slate-400">Director Portal</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

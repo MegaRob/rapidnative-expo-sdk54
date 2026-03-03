@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Submit Another Race - TrailMatch</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyAcKYEhZyUgwUV58uWEVbI4Gwkn65miHt4",
+      authDomain: "trailmatch-49203553-49000.firebaseapp.com",
+      projectId: "trailmatch-49203553-49000",
+      storageBucket: "trailmatch-49203553-49000.firebasestorage.app",
+      messagingSenderId: "1048323489461",
+      appId: "1:1048323489461:web:e3c514fcf0d7748ef848fc"
+    };
+
+    const directorApp = firebase.apps.find((app) => app.name === "director-portal")
+      ? firebase.app("director-portal")
+      : firebase.initializeApp(firebaseConfig, "director-portal");
+
+    const auth = directorApp.auth();
+    const db = directorApp.firestore();
+    const storage = directorApp.storage();
+
+    let authUser = null;
+    let guideOptIn = false;
+
+    /* ---------- Image upload helper ---------- */
+    function uploadImage(file, fieldName) {
+      const uniqueName = Date.now() + '_' + Math.random().toString(36).slice(2) + '_' + file.name.replace(/[^a-zA-Z0-9._-]/g, '');
+      const fileRef = storage.ref('race_uploads/' + uniqueName);
+      const progressBar = document.getElementById(fieldName + '-progress');
+      const previewImg = document.getElementById(fieldName + '-preview-img');
+      const statusEl = document.getElementById(fieldName + '-upload-status');
+      if (progressBar) { progressBar.parentElement.classList.remove('hidden'); progressBar.style.width = '0%'; }
+      if (statusEl) { statusEl.textContent = 'Uploading...'; statusEl.className = 'text-xs text-blue-400 mt-1'; }
+
+      const task = fileRef.put(file);
+      task.on('state_changed',
+        (snap) => {
+          const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
+          if (progressBar) progressBar.style.width = pct + '%';
+        },
+        (err) => {
+          if (statusEl) { statusEl.textContent = 'Upload failed.'; statusEl.className = 'text-xs text-red-400 mt-1'; }
+          console.error('Upload error:', err);
+        },
+        async () => {
+          const url = await task.snapshot.ref.getDownloadURL();
+          if (progressBar) progressBar.parentElement.classList.add('hidden');
+          if (previewImg) { previewImg.src = url; previewImg.parentElement.classList.remove('hidden'); }
+          if (statusEl) { statusEl.textContent = 'Uploaded ✓'; statusEl.className = 'text-xs text-emerald-400 mt-1'; }
+          formData[fieldName] = url;
+          const urlInput = document.getElementById(fieldName);
+          if (urlInput) urlInput.value = url;
+        }
+      );
+    }
+
+    function handleFileDrop(e, fieldName) {
+      e.preventDefault(); e.stopPropagation();
+      e.currentTarget.classList.remove('border-emerald-400', 'bg-emerald-500/5');
+      const file = (e.dataTransfer?.files || e.target?.files || [])[0];
+      if (!file) return;
+      if (!file.type.startsWith('image/')) { alert('Please upload an image file.'); return; }
+      if (file.size > 10 * 1024 * 1024) { alert('Image must be under 10 MB.'); return; }
+      uploadImage(file, fieldName);
+    }
+
+    function handleDragOver(e) { e.preventDefault(); e.currentTarget.classList.add('border-emerald-400', 'bg-emerald-500/5'); }
+    function handleDragLeave(e) { e.currentTarget.classList.remove('border-emerald-400', 'bg-emerald-500/5'); }
+
+    function handleUrlPreview(fieldName) {
+      const url = formData[fieldName];
+      const previewImg = document.getElementById(fieldName + '-preview-img');
+      if (previewImg && url) { previewImg.src = url; previewImg.parentElement.classList.remove('hidden'); }
+      else if (previewImg && !url) { previewImg.parentElement.classList.add('hidden'); }
+    }
+
+    const emptyDistance = () => ({
+      raceTitle: "", label: "", price: "", startTime: "", elevationGain: "", cutoffTime: "",
+      capacity: "", terrainTechnicality: "", gpxRouteLink: "",
+      // Guide fields (per-distance)
+      aidStations: "", aidStationDetails: "", mandatoryGear: "",
+      terrainNotes: "", pacerPolicy: "",
+      crewAccess: "", crewParking: "", description: ""
+    });
+
+    let formData = {
+      raceName: "", date: "", location: "", slogan: "",
+      raceDescription: "",
+      registrationStartDate: "", registrationEndDate: "",
+      featuredImageUrl: "", logoUrl: "",
+      checkInDetails: "",
+      refundTerms: "", utmbIndex: "", itraPoints: "", westernStatesQualifier: "",
+      website: "", socialMedia: "", notes: "",
+      contactName: "", contactEmail: "", contactPhone: ""
+    };
+
+    let distances = [emptyDistance()];
+
+    function esc(str) {
+      return String(str || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function updateFormData(field, value) { formData[field] = value; }
+    function updateDistance(index, field, value) { if (distances[index]) distances[index][field] = value; }
+
+    // Geocode location to lat/lon using OpenStreetMap Nominatim
+    async function geocodeLocation() {
+      const loc = (formData.location || '').trim();
+      const statusEl = document.getElementById('location-status');
+      if (!loc || loc.length < 3) {
+        formData.latitude = null;
+        formData.longitude = null;
+        if (statusEl) statusEl.classList.add('hidden');
+        return;
+      }
+      if (statusEl) {
+        statusEl.textContent = 'Verifying location...';
+        statusEl.className = 'text-xs mt-1 text-blue-400';
+        statusEl.classList.remove('hidden');
+      }
+      try {
+        const resp = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(loc)}&format=json&limit=1&addressdetails=1`, {
+          headers: { 'User-Agent': 'TrailMatch/1.0' }
+        });
+        const results = await resp.json();
+        if (results && results.length > 0) {
+          const r = results[0];
+          formData.latitude = parseFloat(r.lat);
+          formData.longitude = parseFloat(r.lon);
+          const addr = r.address || {};
+          const displayName = [addr.city || addr.town || addr.village || '', addr.state || ''].filter(Boolean).join(', ') || r.display_name.split(',').slice(0,2).join(',');
+          if (statusEl) {
+            statusEl.innerHTML = `✓ Coordinates found: <strong>${displayName}</strong> (${formData.latitude.toFixed(4)}, ${formData.longitude.toFixed(4)})`;
+            statusEl.className = 'text-xs mt-1 text-green-400';
+          }
+        } else {
+          formData.latitude = null;
+          formData.longitude = null;
+          if (statusEl) {
+            statusEl.textContent = '⚠ Could not find that location. Please use a specific city and state (e.g., "Afton, WY").';
+            statusEl.className = 'text-xs mt-1 text-amber-400';
+          }
+        }
+      } catch (err) {
+        console.warn('Geocoding error:', err);
+        formData.latitude = null;
+        formData.longitude = null;
+        if (statusEl) {
+          statusEl.textContent = '⚠ Location lookup failed. Coordinates will be resolved later.';
+          statusEl.className = 'text-xs mt-1 text-amber-400';
+        }
+      }
+    }
+
+    function addDistance() { distances.push(emptyDistance()); renderDistanceCards(); }
+    function removeDistance(index) { if (distances.length <= 1) return; distances.splice(index, 1); renderDistanceCards(); }
+
+    function renderDistanceCards() {
+      const container = document.getElementById('distances-container');
+      if (!container) return;
+      const ic = "w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm";
+      const tac = "w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm resize-none";
+
+      container.innerHTML = distances.map((d, i) => `
+        <div class="border border-slate-800 rounded-xl p-5" style="background: rgba(15, 23, 42, 0.6);">
+          <div class="flex items-center justify-between mb-4">
+            <h4 class="font-semibold text-emerald-300 text-base">Distance ${i + 1}${d.raceTitle ? ' — ' + esc(d.raceTitle) : d.label ? ' — ' + esc(d.label) : ''}</h4>
+            ${distances.length > 1 ? `<button type="button" onclick="removeDistance(${i})" class="text-red-400 text-xs hover:text-red-300 transition">✕ Remove</button>` : ''}
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-medium mb-1">Race Title <span class="text-red-400">*</span></label>
+              <input type="text" value="${esc(d.raceTitle)}" oninput="updateDistance(${i}, 'raceTitle', this.value)" placeholder="e.g., Ultra Beast, Half Marathon" class="${ic}" />
+              <p class="text-xs text-slate-400 mt-1">Displayed as the tab name in the app</p>
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">Distance Label <span class="text-red-400">*</span></label>
+              <input type="text" value="${esc(d.label)}" oninput="updateDistance(${i}, 'label', this.value)" placeholder="e.g., 50K, 100M" class="${ic}" />
+              <p class="text-xs text-slate-400 mt-1">The actual distance (shown in overview)</p>
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">Price ($) <span class="text-red-400">*</span></label>
+              <input type="number" value="${esc(d.price)}" oninput="updateDistance(${i}, 'price', this.value)" placeholder="e.g., 150" class="${ic}" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">Start Time <span class="text-red-400">*</span></label>
+              <input type="text" value="${esc(d.startTime)}" oninput="updateDistance(${i}, 'startTime', this.value)" placeholder="e.g., 6:00 AM MDT" class="${ic}" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">Cutoff Time <span class="text-red-400">*</span></label>
+              <input type="text" value="${esc(d.cutoffTime)}" oninput="updateDistance(${i}, 'cutoffTime', this.value)" placeholder="e.g., 14 hours" class="${ic}" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">Elevation Gain</label>
+              <input type="text" value="${esc(d.elevationGain)}" oninput="updateDistance(${i}, 'elevationGain', this.value)" placeholder="e.g., 8,000ft" class="${ic}" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">Capacity <span class="text-red-400">*</span></label>
+              <input type="number" value="${esc(d.capacity)}" oninput="updateDistance(${i}, 'capacity', this.value)" placeholder="e.g., 200" class="${ic}" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">Terrain Technicality (1-5)</label>
+              <input type="number" min="1" max="5" value="${esc(d.terrainTechnicality)}" oninput="updateDistance(${i}, 'terrainTechnicality', this.value)" placeholder="1 to 5" class="${ic}" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">GPX Route Link</label>
+              <input type="url" value="${esc(d.gpxRouteLink)}" oninput="updateDistance(${i}, 'gpxRouteLink', this.value)" placeholder="https://..." class="${ic}" />
+            </div>
+          </div>
+
+          <!-- Guide fields per distance -->
+          <div class="guide-per-distance ${guideOptIn ? '' : 'hidden'} mt-5 pt-5 border-t border-slate-700/50">
+            <p class="text-emerald-400 text-xs font-semibold uppercase tracking-wider mb-3">🗺️ Race Guide — ${d.label || 'this distance'}</p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium mb-1">Aid Stations Count</label>
+                <input type="number" value="${esc(d.aidStations)}" oninput="updateDistance(${i}, 'aidStations', this.value)" placeholder="e.g., 8" class="${ic}" />
+              </div>
+              <div class="md:col-span-2">
+                <label class="block text-sm font-medium mb-1">Aid Station Details</label>
+                <textarea rows="3" oninput="updateDistance(${i}, 'aidStationDetails', this.value)" placeholder="List stations, mile markers, and services for this distance." class="${tac}">${esc(d.aidStationDetails)}</textarea>
+              </div>
+              <div class="md:col-span-2">
+                <label class="block text-sm font-medium mb-1">Mandatory Gear</label>
+                <textarea rows="2" oninput="updateDistance(${i}, 'mandatoryGear', this.value)" placeholder="Required gear for this distance." class="${tac}">${esc(d.mandatoryGear)}</textarea>
+              </div>
+              <div class="md:col-span-2">
+                <label class="block text-sm font-medium mb-1">Terrain Notes</label>
+                <textarea rows="2" oninput="updateDistance(${i}, 'terrainNotes', this.value)" placeholder="Terrain, weather, or technical sections." class="${tac}">${esc(d.terrainNotes)}</textarea>
+              </div>
+              <div>
+                <label class="block text-sm font-medium mb-1">Pacer Policy</label>
+                <input type="text" value="${esc(d.pacerPolicy)}" oninput="updateDistance(${i}, 'pacerPolicy', this.value)" placeholder="e.g., Pacers after mile 50" class="${ic}" />
+              </div>
+              <div>
+                <label class="block text-sm font-medium mb-1">Crew / Aid Access</label>
+                <input type="text" value="${esc(d.crewAccess)}" oninput="updateDistance(${i}, 'crewAccess', this.value)" placeholder="e.g., Crew at Aid 3 and Finish" class="${ic}" />
+              </div>
+              <div class="md:col-span-2">
+                <label class="block text-sm font-medium mb-1">Crew Parking</label>
+                <textarea rows="2" oninput="updateDistance(${i}, 'crewParking', this.value)" placeholder="Parking info." class="${tac}">${esc(d.crewParking)}</textarea>
+              </div>
+              <div class="md:col-span-2">
+                <label class="block text-sm font-medium mb-1">Distance-Specific Notes</label>
+                <textarea rows="2" oninput="updateDistance(${i}, 'description', this.value)" placeholder="Any notes specific to this distance." class="${tac}">${esc(d.description)}</textarea>
+              </div>
+            </div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function toggleGuideOptIn() {
+      guideOptIn = !guideOptIn;
+      const toggleBtn = document.getElementById('guide-toggle-btn');
+      const toggleStatus = document.getElementById('guide-toggle-status');
+      const toggleDot = document.getElementById('guide-toggle-dot');
+
+      if (guideOptIn) {
+        toggleBtn.classList.remove('bg-slate-700'); toggleBtn.classList.add('bg-emerald-500');
+        toggleDot.classList.remove('translate-x-0'); toggleDot.classList.add('translate-x-5');
+        toggleStatus.textContent = 'Included'; toggleStatus.classList.remove('text-slate-400'); toggleStatus.classList.add('text-emerald-400');
+      } else {
+        toggleBtn.classList.remove('bg-emerald-500'); toggleBtn.classList.add('bg-slate-700');
+        toggleDot.classList.remove('translate-x-5'); toggleDot.classList.add('translate-x-0');
+        toggleStatus.textContent = 'Not included'; toggleStatus.classList.remove('text-emerald-400'); toggleStatus.classList.add('text-slate-400');
+      }
+      renderDistanceCards();
+    }
+
+    function setStatus(message, colorClass) {
+      const statusDiv = document.getElementById("status");
+      if (!statusDiv) return;
+      statusDiv.textContent = message;
+      statusDiv.className = `text-sm mt-2 ${colorClass || ""}`;
+    }
+
+    function showForm() { document.getElementById("form-wrapper").classList.remove("hidden"); document.getElementById("auth-wrapper").classList.add("hidden"); renderDistanceCards(); }
+    function showLogin() { document.getElementById("form-wrapper").classList.add("hidden"); document.getElementById("auth-wrapper").classList.remove("hidden"); }
+
+    async function loadDirectorProfile(user) {
+      const contactEmail = user?.email || "";
+      let contactName = "", contactPhone = "";
+      try {
+        const snap = await db.collection("users").doc(user.uid).get();
+        if (snap.exists) {
+          const data = snap.data() || {};
+          contactName = data.name || [data.firstName, data.lastName].filter(Boolean).join(" ") || data.username || "";
+          contactPhone = data.phoneNumber || data.phone || data.contactPhone || "";
+        }
+      } catch (error) { console.warn("Unable to load director profile:", error); }
+      formData.contactName = contactName || "Race Director";
+      formData.contactEmail = contactEmail;
+      formData.contactPhone = contactPhone;
+      const contactSummary = document.getElementById("contact-summary");
+      if (contactSummary) contactSummary.textContent = `Submitting as ${formData.contactName} (${formData.contactEmail || "no email"})`;
+    }
+
+    auth.onAuthStateChanged(async (user) => {
+      authUser = user || null;
+      if (!authUser) { showLogin(); return; }
+      await loadDirectorProfile(authUser);
+      showForm();
+    });
+
+    async function handleLogin(event) {
+      event.preventDefault();
+      const emailInput = document.getElementById("login-email");
+      const passwordInput = document.getElementById("login-password");
+      const loginStatus = document.getElementById("login-status");
+      if (!emailInput || !passwordInput) return;
+      try {
+        if (loginStatus) { loginStatus.textContent = "Signing in..."; loginStatus.className = "text-xs text-slate-300 mt-2"; }
+        await auth.signInWithEmailAndPassword(emailInput.value.trim().toLowerCase(), passwordInput.value);
+      } catch (error) {
+        if (loginStatus) { loginStatus.textContent = "Unable to sign in. Check credentials."; loginStatus.className = "text-xs text-red-400 mt-2"; }
+      }
+    }
+
+    async function handleSubmit(event) {
+      event.preventDefault();
+      if (!authUser) { setStatus("Please sign in.", "text-red-400"); return; }
+      const submitButton = document.getElementById("submit-button");
+
+      const requiredFields = ["raceName", "raceDescription", "refundTerms"];
+      const missingField = requiredFields.find(f => !formData[f] || String(formData[f]).trim() === "");
+      if (missingField) { setStatus("Please fill in all required fields.", "text-red-400"); return; }
+      if (!formData.date) { setStatus("Please select a race date.", "text-red-400"); return; }
+      if (!formData.registrationStartDate || !formData.registrationEndDate) { setStatus("Please set registration open and close dates.", "text-red-400"); return; }
+      if (formData.registrationStartDate > formData.registrationEndDate) { setStatus("Registration open date must be before the close date.", "text-red-400"); return; }
+      if (!formData.location) { setStatus("Please enter a location.", "text-red-400"); return; }
+
+      // Geocode if not already done
+      if (formData.latitude == null || formData.longitude == null) {
+        await geocodeLocation();
+      }
+      if (formData.latitude == null || formData.longitude == null) {
+        setStatus('We couldn\'t verify that location. Please enter a specific city and state (e.g., "Afton, WY").', "text-red-400");
+        return;
+      }
+
+      const validDistances = distances.filter(d => d.label && String(d.label).trim());
+      if (validDistances.length === 0) { setStatus("Please add at least one distance.", "text-red-400"); return; }
+      const incompleteDistance = validDistances.find(d => !d.price || !d.startTime || !d.cutoffTime || !d.capacity);
+      if (incompleteDistance) { setStatus(`Fill in all required fields for "${incompleteDistance.label}".`, "text-red-400"); return; }
+
+      if (!formData.contactEmail) { setStatus("We need your email.", "text-red-400"); return; }
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(formData.contactEmail)) { setStatus("Your email looks invalid.", "text-red-400"); return; }
+
+      try {
+        if (submitButton) submitButton.disabled = true;
+        setStatus("Submitting...", "text-blue-400");
+
+        const distancesPayload = validDistances.map(d => ({
+          raceTitle: (d.raceTitle || '').trim(),
+          label: d.label.trim(),
+          price: parseFloat(d.price) || 0,
+          startTime: d.startTime || "",
+          elevationGain: d.elevationGain || "",
+          cutoffTime: d.cutoffTime || "",
+          capacity: parseInt(d.capacity, 10) || 0,
+          terrainTechnicality: parseInt(d.terrainTechnicality, 10) || 0,
+          gpxRouteLink: d.gpxRouteLink || "",
+          // Per-distance guide fields
+          aidStations: d.aidStations ? parseInt(d.aidStations, 10) || 0 : 0,
+          aidStationDetails: d.aidStationDetails || "",
+          mandatoryGear: d.mandatoryGear || "",
+          terrainNotes: d.terrainNotes || "",
+          pacerPolicy: d.pacerPolicy || "",
+          crewAccess: d.crewAccess || "",
+          crewParking: d.crewParking || "",
+          description: d.description || ""
+        }));
+
+        const primary = distancesPayload[0] || {};
+
+        const payload = {
+          raceName: formData.raceName, date: formData.date, location: formData.location,
+          latitude: formData.latitude, longitude: formData.longitude,
+          registrationStartDate: formData.registrationStartDate || "",
+          registrationEndDate: formData.registrationEndDate || "",
+          slogan: formData.slogan, description: formData.raceDescription || "",
+          image: formData.featuredImageUrl, imageUrl: formData.featuredImageUrl,
+          logoUrl: formData.logoUrl,
+          distances: distancesPayload,
+          distancesOffered: distancesPayload.map(d => d.label),
+          // Backward-compat flat (from primary)
+          startTime: primary.startTime || "", elevationGain: primary.elevationGain || "",
+          elevation: primary.elevationGain || "", cutoffTime: primary.cutoffTime || "",
+          price: primary.price || 0, capacity: primary.capacity || 0,
+          terrainTechnicality: primary.terrainTechnicality || 0, gpxRouteLink: primary.gpxRouteLink || "",
+          aidStations: primary.aidStations || 0, aidStationDetails: primary.aidStationDetails || "",
+          mandatoryGear: primary.mandatoryGear || "", checkInDetails: formData.checkInDetails || "",
+          terrainNotes: primary.terrainNotes || "", pacerPolicy: primary.pacerPolicy || "",
+          crewAccess: primary.crewAccess || "", crewParking: primary.crewParking || "",
+          description: primary.description || "",
+          refundTerms: formData.refundTerms || "",
+          utmbIndex: formData.utmbIndex || "", itraPoints: formData.itraPoints || "",
+          westernStatesQualifier: formData.westernStatesQualifier || "",
+          website: formData.website || "", socialMedia: formData.socialMedia || "",
+          notes: formData.notes || "",
+          contactName: formData.contactName, contactEmail: formData.contactEmail,
+          contactPhone: formData.contactPhone || "",
+          guideOptIn: guideOptIn, directorId: authUser.uid,
+          status: "pending", submittedAt: firebase.firestore.Timestamp.now()
+        };
+
+        await db.collection("raceRequests").add(payload);
+        resetRaceFields();
+        window.location.href = 'submission-thank-you.html';
+      } catch (error) {
+        console.error("Error:", error);
+        setStatus("Error submitting. Try again.", "text-red-400");
+      } finally {
+        if (submitButton) submitButton.disabled = false;
+      }
+    }
+
+    function resetRaceFields() {
+      guideOptIn = false;
+      const toggleBtn = document.getElementById('guide-toggle-btn');
+      const toggleStatus = document.getElementById('guide-toggle-status');
+      const toggleDot = document.getElementById('guide-toggle-dot');
+      if (toggleBtn) { toggleBtn.classList.remove('bg-emerald-500'); toggleBtn.classList.add('bg-slate-700'); }
+      if (toggleDot) { toggleDot.classList.remove('translate-x-5'); toggleDot.classList.add('translate-x-0'); }
+      if (toggleStatus) { toggleStatus.textContent = 'Not included'; toggleStatus.classList.remove('text-emerald-400'); toggleStatus.classList.add('text-slate-400'); }
+
+      ['raceName','date','location','registrationStartDate','registrationEndDate','slogan','raceDescription','featuredImageUrl','logoUrl','checkInDetails','refundTerms','utmbIndex','itraPoints','westernStatesQualifier','website','socialMedia','notes'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+      Object.keys(formData).forEach(k => { if (k !== 'contactName' && k !== 'contactEmail' && k !== 'contactPhone') formData[k] = ''; });
+      distances = [emptyDistance()];
+      renderDistanceCards();
+    }
+
+    window.updateFormData = updateFormData;
+    window.updateDistance = updateDistance;
+    window.addDistance = addDistance;
+    window.removeDistance = removeDistance;
+    window.handleSubmit = handleSubmit;
+    window.handleLogin = handleLogin;
+    window.toggleGuideOptIn = toggleGuideOptIn;
+    window.geocodeLocation = geocodeLocation;
+    window.handleFileDrop = handleFileDrop;
+    window.handleDragOver = handleDragOver;
+    window.handleDragLeave = handleDragLeave;
+    window.handleUrlPreview = handleUrlPreview;
+  </script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div class="container mx-auto px-4 py-10 max-w-5xl">
+    <div class="text-center mb-10">
+      <h1 class="text-4xl font-bold mb-2 text-emerald-400">Submit Another Race</h1>
+      <p class="text-slate-400">Use your director profile info and add a new race.</p>
+    </div>
+
+    <div id="auth-wrapper" class="hidden">
+      <div class="bg-slate-900 rounded-2xl p-8 max-w-md mx-auto">
+        <h2 class="text-xl font-semibold text-emerald-400 mb-4">Director Sign In</h2>
+        <form onsubmit="handleLogin(event)" class="space-y-4">
+          <input id="login-email" type="email" placeholder="Email" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" required />
+          <input id="login-password" type="password" placeholder="Password" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2" required />
+          <button class="w-full bg-emerald-500 text-white px-4 py-2 rounded-lg">Sign In</button>
+          <p id="login-status" class="text-xs text-slate-400"></p>
+        </form>
+      </div>
+    </div>
+
+    <div id="form-wrapper" class="hidden">
+      <div class="bg-slate-900 rounded-2xl p-8">
+        <p id="contact-summary" class="text-xs text-slate-400 mb-4"></p>
+
+        <form onsubmit="handleSubmit(event)">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+            <div class="md:col-span-2">
+              <label for="raceName" class="block text-sm font-medium mb-2">Race Name <span class="text-red-400">*</span></label>
+              <input type="text" id="raceName" required oninput="updateFormData('raceName', this.value)" placeholder="e.g., El Vaquero Loco" class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            </div>
+
+            <div>
+              <label for="date" class="block text-sm font-medium mb-2">Race Date <span class="text-red-400">*</span></label>
+              <input type="date" id="date" required oninput="updateFormData('date', this.value)" class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            </div>
+
+            <div>
+              <label for="location" class="block text-sm font-medium mb-2">Location <span class="text-red-400">*</span></label>
+              <input type="text" id="location" required oninput="updateFormData('location', this.value)" onblur="geocodeLocation()" placeholder="e.g., Afton, WY" class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+              <p class="text-xs text-slate-500 mt-1">Enter a specific city and state (e.g., "Afton, WY" or "Leadville, CO")</p>
+              <div id="location-status" class="text-xs mt-1 hidden"></div>
+            </div>
+
+            <div>
+              <label for="registrationStartDate" class="block text-sm font-medium mb-2">Registration Opens <span class="text-red-400">*</span></label>
+              <input type="date" id="registrationStartDate" required oninput="updateFormData('registrationStartDate', this.value)" class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            </div>
+
+            <div>
+              <label for="registrationEndDate" class="block text-sm font-medium mb-2">Registration Closes <span class="text-red-400">*</span></label>
+              <input type="date" id="registrationEndDate" required oninput="updateFormData('registrationEndDate', this.value)" class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            </div>
+
+            <div class="md:col-span-2">
+              <label for="slogan" class="block text-sm font-medium mb-2">Slogan / Tagline <span class="text-red-400">*</span></label>
+              <input type="text" id="slogan" oninput="updateFormData('slogan', this.value)" placeholder="e.g., Old School Fun in Western Wyoming" class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            </div>
+
+            <div class="md:col-span-2">
+              <label for="raceDescription" class="block text-sm font-medium mb-2">Race Description <span class="text-red-400">*</span></label>
+              <textarea id="raceDescription" rows="4" required oninput="updateFormData('raceDescription', this.value)" placeholder="Describe your race — what makes it unique, the course, the experience, etc." class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none"></textarea>
+            </div>
+
+            <!-- Featured Image: Upload or URL -->
+            <div class="md:col-span-2">
+              <label class="block text-sm font-medium mb-2">Featured Image</label>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="border-2 border-dashed border-slate-700 rounded-lg p-4 text-center cursor-pointer hover:border-emerald-400 transition-colors"
+                     ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)"
+                     ondrop="handleFileDrop(event, 'featuredImageUrl')"
+                     onclick="document.getElementById('featuredImageUrl-file').click()">
+                  <input type="file" id="featuredImageUrl-file" accept="image/*" class="hidden" onchange="handleFileDrop(event, 'featuredImageUrl')" />
+                  <div class="text-3xl mb-1">📷</div>
+                  <p class="text-sm text-slate-300 font-medium">Drag & drop or click to upload</p>
+                  <p class="text-xs text-slate-500 mt-1">PNG, JPG, WEBP · Max 10 MB</p>
+                  <div class="hidden mt-3 w-full bg-slate-800 rounded-full h-2">
+                    <div id="featuredImageUrl-progress" class="bg-emerald-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                  </div>
+                  <p id="featuredImageUrl-upload-status" class="text-xs mt-1"></p>
+                </div>
+                <div>
+                  <p class="text-xs text-slate-400 mb-1">Or paste an image URL</p>
+                  <input type="url" id="featuredImageUrl" oninput="updateFormData('featuredImageUrl', this.value); handleUrlPreview('featuredImageUrl')" placeholder="https://..." class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+                  <div class="hidden mt-2 rounded-lg overflow-hidden border border-slate-700" style="max-height: 120px;">
+                    <img id="featuredImageUrl-preview-img" src="" alt="Preview" class="w-full h-full object-cover" style="max-height: 120px;" onerror="this.parentElement.classList.add('hidden')" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Logo: Upload or URL -->
+            <div class="md:col-span-2">
+              <label class="block text-sm font-medium mb-2">Race Logo</label>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="border-2 border-dashed border-slate-700 rounded-lg p-4 text-center cursor-pointer hover:border-emerald-400 transition-colors"
+                     ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)"
+                     ondrop="handleFileDrop(event, 'logoUrl')"
+                     onclick="document.getElementById('logoUrl-file').click()">
+                  <input type="file" id="logoUrl-file" accept="image/*" class="hidden" onchange="handleFileDrop(event, 'logoUrl')" />
+                  <div class="text-3xl mb-1">🏔️</div>
+                  <p class="text-sm text-slate-300 font-medium">Drag & drop or click to upload</p>
+                  <p class="text-xs text-slate-500 mt-1">PNG, JPG, WEBP · Max 10 MB</p>
+                  <div class="hidden mt-3 w-full bg-slate-800 rounded-full h-2">
+                    <div id="logoUrl-progress" class="bg-emerald-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                  </div>
+                  <p id="logoUrl-upload-status" class="text-xs mt-1"></p>
+                </div>
+                <div>
+                  <p class="text-xs text-slate-400 mb-1">Or paste a logo URL</p>
+                  <input type="url" id="logoUrl" oninput="updateFormData('logoUrl', this.value); handleUrlPreview('logoUrl')" placeholder="https://..." class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+                  <div class="hidden mt-2 rounded-lg overflow-hidden border border-slate-700" style="max-height: 120px;">
+                    <img id="logoUrl-preview-img" src="" alt="Preview" class="w-full h-full object-cover" style="max-height: 120px;" onerror="this.parentElement.classList.add('hidden')" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- DISTANCES -->
+            <div class="md:col-span-2">
+              <h3 class="text-lg font-semibold mb-1 text-emerald-400 border-b border-slate-800 pb-2">Distances</h3>
+              <p class="text-sm text-slate-400 mb-4">Add each distance your event offers.</p>
+            </div>
+
+            <!-- GUIDE OPT-IN -->
+            <div class="md:col-span-2">
+              <div class="rounded-xl p-5" style="background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.2);">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3 class="text-lg font-bold text-emerald-400 flex items-center gap-2">🗺️ Race Guide</h3>
+                    <p class="text-slate-400 text-sm mt-1">Add per-distance guide info: aid stations, gear lists, course details, pacer/crew rules.</p>
+                    <p class="text-slate-500 text-xs mt-1">Currently free during beta · Will be a premium add-on</p>
+                    <a href="race-guide.html?trailId=kStVCXE5Hqm6iI0OrEJ2" target="_blank" rel="noreferrer" class="inline-flex items-center gap-1 text-emerald-400 hover:text-emerald-300 text-xs font-medium mt-2 transition-colors">👁️ See an example Race Guide →</a>
+                  </div>
+                  <div class="flex items-center gap-3 ml-4 shrink-0">
+                    <span id="guide-toggle-status" class="text-sm text-slate-400">Not included</span>
+                    <button type="button" id="guide-toggle-btn" onclick="toggleGuideOptIn()" class="relative inline-flex h-7 w-12 items-center rounded-full bg-slate-700 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-slate-950">
+                      <span id="guide-toggle-dot" class="inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform duration-200 translate-x-0 ml-1"></span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div id="distances-container" class="md:col-span-2 space-y-4"></div>
+
+            <div class="md:col-span-2">
+              <button type="button" onclick="addDistance()" class="w-full border-2 border-dashed border-slate-700 hover:border-emerald-500 text-slate-400 hover:text-emerald-400 rounded-xl py-3 text-sm font-medium transition-colors duration-200">
+                + Add Another Distance
+              </button>
+            </div>
+
+            <!-- CHECK-IN DETAILS (event-level, same for all distances) -->
+            <div class="md:col-span-2">
+              <label for="checkInDetails" class="block text-sm font-medium mb-2">Check-In Details</label>
+              <textarea id="checkInDetails" rows="2" oninput="updateFormData('checkInDetails', this.value)" placeholder="Check-in location and time window (applies to all distances)." class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+            </div>
+
+            <!-- Refund -->
+            <div class="md:col-span-2">
+              <label for="refundTerms" class="block text-sm font-medium mb-2">Refund / Deferral Terms <span class="text-red-400">*</span></label>
+              <input type="text" id="refundTerms" required oninput="updateFormData('refundTerms', this.value)" placeholder="e.g., 80% refund before May 1" class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            </div>
+
+            <div>
+              <label for="utmbIndex" class="block text-sm font-medium mb-2">UTMB Index</label>
+              <input type="text" id="utmbIndex" oninput="updateFormData('utmbIndex', this.value)" placeholder="e.g., 600" class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            </div>
+
+            <div>
+              <label for="itraPoints" class="block text-sm font-medium mb-2">ITRA Points</label>
+              <input type="text" id="itraPoints" oninput="updateFormData('itraPoints', this.value)" placeholder="e.g., 4" class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            </div>
+
+            <div class="md:col-span-2">
+              <label for="westernStatesQualifier" class="block text-sm font-medium mb-2">Western States Qualifier</label>
+              <input type="text" id="westernStatesQualifier" oninput="updateFormData('westernStatesQualifier', this.value)" placeholder="e.g., Yes - 100K qualifier" class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            </div>
+
+            <div>
+              <label for="website" class="block text-sm font-medium mb-2">Race Website</label>
+              <input type="url" id="website" oninput="updateFormData('website', this.value)" placeholder="https://yourrace.com" class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            </div>
+
+            <div class="md:col-span-2">
+              <label for="socialMedia" class="block text-sm font-medium mb-2">Social Media Links</label>
+              <input type="text" id="socialMedia" oninput="updateFormData('socialMedia', this.value)" placeholder="Instagram, Facebook links" class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            </div>
+
+            <div class="md:col-span-2">
+              <label for="notes" class="block text-sm font-medium mb-2">Additional Notes</label>
+              <textarea id="notes" rows="3" oninput="updateFormData('notes', this.value)" placeholder="Anything else..." class="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+            </div>
+
+          </div>
+
+          <div id="status" class="mt-4"></div>
+          <button type="submit" id="submit-button" class="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 px-6 rounded-lg transition duration-200 mt-6">Submit Race Request</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

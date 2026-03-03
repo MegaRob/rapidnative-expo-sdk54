@@ -1,0 +1,29 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Profile photos - users can upload/update/delete their own, and read anyone's
+    match /profile_photos/{userId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Trail/race images - authenticated users can read, only admins can write
+    match /trail_images/{imageId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == 'gveHJNWFRgZKj0qz8ZOJuT976j13';
+    }
+
+    // Race submission uploads - anyone can upload images (public submission form)
+    // Protected by file size and content type restrictions
+    match /race_uploads/{fileName} {
+      allow read;
+      allow write: if request.resource.size < 10 * 1024 * 1024  // 10 MB max
+                   && request.resource.contentType.matches('image/.*');
+    }
+
+    // Default: deny all other access
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,1281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TrailMatch Race Director Portal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            emerald: {
+              500: '#10b981',
+            },
+          },
+          boxShadow: {
+            glow: '0 0 20px rgba(16, 185, 129, 0.15)',
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    .glass {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid rgba(16, 185, 129, 0.12);
+      box-shadow: 0 10px 30px rgba(2, 6, 23, 0.7);
+      backdrop-filter: blur(16px);
+    }
+    .phone-frame {
+      width: 300px;
+      height: 600px;
+      border-radius: 32px;
+      border: 2px solid rgba(148, 163, 184, 0.4);
+      background: #0f172a;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100">
+  <div id="root" class="min-h-screen"></div>
+
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useState } = React;
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyAcKYEhZyUgwUV58uWEVbI4Gwkn65miHt4",
+      authDomain: "trailmatch-49203553-49000.firebaseapp.com",
+      projectId: "trailmatch-49203553-49000",
+      storageBucket: "trailmatch-49203553-49000.firebasestorage.app",
+      messagingSenderId: "1048323489461",
+      appId: "1:1048323489461:web:e3c514fcf0d7748ef848fc"
+    };
+
+    const directorApp = firebase.apps.find((app) => app.name === "director-portal")
+      ? firebase.app("director-portal")
+      : firebase.initializeApp(firebaseConfig, "director-portal");
+
+    const auth = directorApp.auth();
+    const db = directorApp.firestore();
+    const storage = directorApp.storage();
+
+    const TABS = [
+      { id: "overview", label: "Overview" },
+      { id: "editor", label: "App Content" },
+      { id: "guide", label: "Race Guide" },
+      { id: "roster", label: "Roster" },
+      { id: "race-day", label: "Race Day" },
+      { id: "results", label: "Results" },
+    ];
+
+    /* ---------- Image upload helper for director portal ---------- */
+    function uploadImageToStorage(file, callback, onProgress) {
+      const uniqueName = Date.now() + '_' + Math.random().toString(36).slice(2) + '_' + file.name.replace(/[^a-zA-Z0-9._-]/g, '');
+      const fileRef = storage.ref('race_uploads/' + uniqueName);
+      const task = fileRef.put(file);
+      task.on('state_changed',
+        (snap) => { if (onProgress) onProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)); },
+        (err) => { console.error('Upload error:', err); alert('Upload failed: ' + err.message); },
+        async () => { const url = await task.snapshot.ref.getDownloadURL(); callback(url); }
+      );
+    }
+
+    /* ImageUploadField React component */
+    function ImageUploadField({ label, value, onChange, emoji }) {
+      const [uploading, setUploading] = useState(false);
+      const [progress, setProgress] = useState(0);
+      const fileRef = React.useRef(null);
+
+      const handleFile = (file) => {
+        if (!file) return;
+        if (!file.type.startsWith('image/')) { alert('Please select an image file.'); return; }
+        if (file.size > 10 * 1024 * 1024) { alert('Image must be under 10 MB.'); return; }
+        setUploading(true);
+        uploadImageToStorage(file,
+          (url) => { onChange(url); setUploading(false); setProgress(0); },
+          (pct) => setProgress(pct)
+        );
+      };
+
+      const handleDrop = (e) => { e.preventDefault(); handleFile(e.dataTransfer?.files?.[0]); };
+      const handleDragOver = (e) => { e.preventDefault(); };
+
+      return (
+        <div className="col-span-2">
+          <p className="text-xs text-slate-400 mb-2">{label}</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div
+              className="border-2 border-dashed border-slate-700 rounded-2xl p-4 text-center cursor-pointer hover:border-emerald-400 transition-colors"
+              onDrop={handleDrop} onDragOver={handleDragOver}
+              onClick={() => fileRef.current?.click()}
+            >
+              <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => handleFile(e.target.files?.[0])} />
+              <div className="text-2xl mb-1">{emoji || '📷'}</div>
+              <p className="text-xs text-slate-300 font-medium">Drag & drop or click</p>
+              <p className="text-[10px] text-slate-500 mt-1">PNG, JPG, WEBP · Max 10 MB</p>
+              {uploading && (
+                <div className="mt-2 w-full bg-slate-800 rounded-full h-1.5">
+                  <div className="bg-emerald-500 h-1.5 rounded-full transition-all" style={{ width: progress + '%' }}></div>
+                </div>
+              )}
+            </div>
+            <div>
+              <p className="text-[10px] text-slate-500 mb-1">Or paste URL</p>
+              <input
+                className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-2 text-slate-100 text-sm"
+                value={value || ''}
+                onChange={(e) => onChange(e.target.value)}
+                placeholder="https://..."
+              />
+              {value && (
+                <div className="mt-2 rounded-xl overflow-hidden border border-slate-700" style={{ maxHeight: 100 }}>
+                  <img src={value} alt="preview" className="w-full object-cover" style={{ maxHeight: 100 }} onError={(e) => { e.target.parentElement.style.display = 'none'; }} />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const formatMoney = (value) => `$${(value || 0).toLocaleString()}`;
+    const formatPercent = (value) => `${Math.round(value || 0)}%`;
+    const formatDate = (value) => {
+      if (!value) return "TBD";
+      if (typeof value === "string") return value;
+      if (value?.seconds) return new Date(value.seconds * 1000).toLocaleDateString();
+      if (value?.toDate) return value.toDate().toLocaleDateString();
+      return "TBD";
+    };
+
+    const parseSegments = (value) => {
+      if (Array.isArray(value)) {
+        return value.filter(Boolean).map((segment) => ({
+          label: segment?.label || "",
+          value: segment?.value || "",
+        }));
+      }
+      if (typeof value === "string" && value.trim()) {
+        return value
+          .split(/\n|;/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => {
+            const [label, ...rest] = line.split(":");
+            const tail = rest.join(":").trim();
+            return tail
+              ? { label: label.trim(), value: tail }
+              : { label: "", value: line };
+          });
+      }
+      return [];
+    };
+
+    const parseAidStations = (value, details) => {
+      if (Array.isArray(value)) {
+        return value.filter(Boolean).map((station) => ({
+          name: station?.name || "",
+          mile: station?.mile || "",
+          service: station?.service || "",
+        }));
+      }
+      if (typeof details === "string" && details.trim()) {
+        return details
+          .split(/\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => ({ name: line, mile: "", service: "" }));
+      }
+      return [];
+    };
+
+    const normalizeGuideEditor = (race) => {
+      const guide = race?.guide || {};
+
+      // Build distances array with per-distance guide fields
+      let distances = [];
+      if (Array.isArray(race?.distances) && race.distances.length > 0) {
+        distances = race.distances.map((d) => ({
+          label: d.label || "",
+          price: d.price?.toString?.() || "",
+          startTime: d.startTime || "",
+          elevationGain: d.elevationGain || "",
+          cutoffTime: d.cutoffTime || "",
+          capacity: d.capacity?.toString?.() || "",
+          terrainTechnicality: d.terrainTechnicality?.toString?.() || "",
+          gpxRouteLink: d.gpxRouteLink || "",
+          // Per-distance guide fields
+          aidStations: d.aidStations?.toString?.() || "",
+          aidStationDetails: d.aidStationDetails || "",
+          mandatoryGear: d.mandatoryGear || "",
+          checkInDetails: d.checkInDetails || "",
+          terrainNotes: d.terrainNotes || "",
+          pacerPolicy: d.pacerPolicy || "",
+          crewAccess: d.crewAccess || "",
+          crewParking: d.crewParking || "",
+          description: d.description || "",
+        }));
+      } else {
+        const labels = Array.isArray(race?.distancesOffered) ? race.distancesOffered : [];
+        distances = [{
+          label: labels[0] || "",
+          price: race?.price?.toString?.() || "",
+          startTime: race?.startTime || "",
+          elevationGain: race?.elevationGain || race?.elevation || "",
+          cutoffTime: race?.cutoffTime || "",
+          capacity: race?.capacity?.toString?.() || "",
+          terrainTechnicality: race?.terrainTechnicality?.toString?.() || "",
+          gpxRouteLink: race?.gpxRouteLink || "",
+          // Fallback to event-level guide fields
+          aidStations: race?.aidStations?.toString?.() || "",
+          aidStationDetails: race?.aidStationDetails || "",
+          mandatoryGear: guide?.essentials?.mandatoryGear || race?.mandatoryGear || "",
+          terrainNotes: guide?.courseProfile?.terrainNotes || race?.terrainNotes || "",
+          pacerPolicy: guide?.rules?.pacerRules || race?.pacerPolicy || "",
+          crewAccess: guide?.rules?.crewAccess || race?.crewAccess || "",
+          crewParking: guide?.rules?.parkingInfo || race?.crewParking || "",
+          description: race?.description || "",
+        }];
+      }
+
+      return {
+        distances,
+        date: getDateInputValue(race?.date),
+        location: race?.location || "",
+        registrationStartDate: getDateInputValue(race?.registrationStartDate),
+        registrationEndDate: getDateInputValue(race?.registrationEndDate),
+        description: race?.description || "",
+        checkInDetails: guide?.essentials?.checkInInfo || race?.checkInDetails || "",
+        links: {
+          website: guide?.links?.website || race?.website || "",
+          contactEmail: guide?.links?.contactEmail || race?.contactEmail || "",
+        },
+      };
+    };
+    const getDateInputValue = (value) => {
+      if (!value) return "";
+      if (typeof value === "string") return value;
+      if (value?.seconds) return new Date(value.seconds * 1000).toLocaleDateString();
+      if (value?.toDate) return value.toDate().toLocaleDateString();
+      return "";
+    };
+
+    const downloadCsv = (rows, filename) => {
+      const csv = rows
+        .map((row) =>
+          row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(",")
+        )
+        .join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = filename;
+      link.click();
+    };
+
+    function DirectorPortal() {
+      const [authUser, setAuthUser] = useState(null);
+      const [authReady, setAuthReady] = useState(false);
+      const [profile, setProfile] = useState(null);
+      const [races, setRaces] = useState([]);
+      const [activeRaceId, setActiveRaceId] = useState("");
+      const [activeRace, setActiveRace] = useState(null);
+      const [tab, setTab] = useState("overview");
+      const [registrations, setRegistrations] = useState([]);
+      const [resultsMap, setResultsMap] = useState({});
+      const [userMap, setUserMap] = useState({});
+      const [search, setSearch] = useState("");
+      const [editor, setEditor] = useState({
+        slogan: "",
+        featuredImageUrl: "",
+        logoUrl: "",
+        difficulty: "",
+      });
+      const [guideEditor, setGuideEditor] = useState(() => normalizeGuideEditor(null));
+      const [guideDistIdx, setGuideDistIdx] = useState(0);
+      const [loginState, setLoginState] = useState({ email: "", password: "", error: "" });
+      const [resetState, setResetState] = useState({ email: "", status: "", error: "" });
+      const [passwordForm, setPasswordForm] = useState({
+        current: "",
+        next: "",
+        confirm: "",
+        error: "",
+        saving: false,
+        success: false,
+      });
+
+      useEffect(() => {
+        const unsubscribe = auth.onAuthStateChanged((user) => {
+          setAuthUser(user || null);
+          setAuthReady(true);
+        });
+        return () => unsubscribe();
+      }, []);
+
+      useEffect(() => {
+        if (!authUser) {
+          setProfile(null);
+          return;
+        }
+        const unsubscribe = db.collection("users").doc(authUser.uid).onSnapshot((doc) => {
+          setProfile(doc.exists ? { id: doc.id, ...doc.data() } : null);
+        });
+        return () => unsubscribe();
+      }, [authUser]);
+
+      useEffect(() => {
+        if (!authUser) return;
+        const raceQuery = db
+          .collection("trails")
+          .where("directorId", "==", authUser.uid);
+        const unsubscribe = raceQuery.onSnapshot((snapshot) => {
+          const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+          setRaces(list);
+          if (!activeRaceId && list.length > 0) {
+            setActiveRaceId(list[0].id);
+          }
+        });
+        return () => unsubscribe();
+      }, [authUser, activeRaceId]);
+
+      useEffect(() => {
+        if (!activeRaceId) return;
+        const unsubscribe = db.collection("trails").doc(activeRaceId).onSnapshot((doc) => {
+          setActiveRace(doc.exists ? { id: doc.id, ...doc.data() } : null);
+        });
+        return () => unsubscribe();
+      }, [activeRaceId]);
+
+      useEffect(() => {
+        if (!activeRaceId) return;
+        const unsubscribe = db
+          .collection("registrations")
+          .where("trailId", "==", activeRaceId)
+          .onSnapshot((snapshot) => {
+            setRegistrations(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+          });
+        return () => unsubscribe();
+      }, [activeRaceId]);
+
+      useEffect(() => {
+        if (!activeRaceId) return;
+        const unsubscribe = db
+          .collection("completed_races")
+          .where("trailId", "==", activeRaceId)
+          .onSnapshot((snapshot) => {
+            const map = {};
+            snapshot.forEach((doc) => {
+              const data = doc.data();
+              if (data.userId) map[data.userId] = { id: doc.id, ...data };
+            });
+            setResultsMap(map);
+          });
+        return () => unsubscribe();
+      }, [activeRaceId]);
+
+      useEffect(() => {
+        const missing = registrations
+          .map((reg) => reg.userId)
+          .filter((uid) => uid && !userMap[uid]);
+        if (missing.length === 0) return;
+        missing.forEach(async (uid) => {
+          const snap = await db.collection("users").doc(uid).get();
+          if (snap.exists) {
+            setUserMap((prev) => ({ ...prev, [uid]: { id: uid, ...snap.data() } }));
+          }
+        });
+      }, [registrations, userMap]);
+
+      useEffect(() => {
+        if (!activeRace) return;
+        setEditor({
+          slogan: activeRace.slogan || "",
+          featuredImageUrl: activeRace.image || activeRace.imageUrl || "",
+          logoUrl: activeRace.logoUrl || "",
+          difficulty: activeRace.difficulty || "",
+        });
+      }, [activeRace]);
+
+      useEffect(() => {
+        if (!activeRace) return;
+        setGuideEditor(normalizeGuideEditor(activeRace));
+      }, [activeRace]);
+
+      const hasAssignedRace = races.length > 0;
+      const isAuthorized =
+        authUser && (!hasAssignedRace || !activeRace || activeRace.directorId === authUser.uid);
+      const priceValue = parseFloat(activeRace?.price) || 0;
+      const capacityValue = parseInt(activeRace?.capacity, 10) || 0;
+      const previewDistances = Array.isArray(activeRace?.distancesOffered)
+        ? activeRace.distancesOffered
+        : typeof activeRace?.distancesOffered === "string"
+          ? activeRace.distancesOffered.split(",").map((d) => d.trim()).filter(Boolean)
+          : [];
+      const previewElevation = activeRace?.elevationGain || activeRace?.elevation || "TBD";
+      const revenue = priceValue * registrations.length;
+      const fillPercent = capacityValue ? (registrations.length / capacityValue) * 100 : 0;
+      const checkIns = registrations.filter((reg) => reg.checkedIn).length;
+      const checkInPercent = registrations.length ? (checkIns / registrations.length) * 100 : 0;
+      const finisherCount = Object.values(resultsMap).filter((r) => r.official).length;
+
+      const filteredRegistrations = useMemo(() => {
+        const term = search.toLowerCase();
+        return registrations.filter((reg) => {
+          const info = userMap[reg.userId] || {};
+          const name = `${info.name || info.username || ""}`.toLowerCase();
+          const bib = `${reg.bibNumber || ""}`.toLowerCase();
+          return name.includes(term) || bib.includes(term);
+        });
+      }, [registrations, search, userMap]);
+
+      const handlePasswordUpdate = async () => {
+        if (!auth.currentUser) return;
+        const trimmedNext = passwordForm.next.trim();
+        if (!passwordForm.current.trim()) {
+          setPasswordForm((prev) => ({ ...prev, error: "Enter your temporary password." }));
+          return;
+        }
+        if (trimmedNext.length < 8) {
+          setPasswordForm((prev) => ({ ...prev, error: "New password must be at least 8 characters." }));
+          return;
+        }
+        if (trimmedNext !== passwordForm.confirm.trim()) {
+          setPasswordForm((prev) => ({ ...prev, error: "Passwords do not match." }));
+          return;
+        }
+        setPasswordForm((prev) => ({ ...prev, saving: true, error: "", success: false }));
+        try {
+          const credential = firebase.auth.EmailAuthProvider.credential(
+            auth.currentUser.email,
+            passwordForm.current.trim()
+          );
+          await auth.currentUser.reauthenticateWithCredential(credential);
+          await auth.currentUser.updatePassword(trimmedNext);
+          await db.collection("users").doc(auth.currentUser.uid).set(
+            {
+              mustResetPassword: false,
+              passwordUpdatedAt: new Date(),
+            },
+            { merge: true }
+          );
+          setPasswordForm({
+            current: "",
+            next: "",
+            confirm: "",
+            error: "",
+            saving: false,
+            success: true,
+          });
+        } catch (error) {
+          console.error("Password update failed:", error);
+          setPasswordForm((prev) => ({
+            ...prev,
+            saving: false,
+            error: "Unable to update password. Please verify your temporary password.",
+          }));
+        }
+      };
+
+      const handleEditorSave = async () => {
+        if (!activeRaceId) return;
+        await db.collection("trails").doc(activeRaceId).update({
+          slogan: editor.slogan,
+          image: editor.featuredImageUrl,
+          imageUrl: editor.featuredImageUrl,
+          featuredImageUrl: editor.featuredImageUrl,
+          logoUrl: editor.logoUrl,
+          difficulty: editor.difficulty,
+        });
+      };
+
+      const handleGuideSave = async () => {
+        if (!activeRaceId) return;
+
+        // Build cleaned distances array with per-distance guide fields
+        const cleanDistances = (guideEditor.distances || []).map((d) => ({
+          raceTitle: d.raceTitle || "",
+          label: d.label || "",
+          price: parseFloat(d.price) || 0,
+          startTime: d.startTime || "",
+          elevationGain: d.elevationGain || "",
+          cutoffTime: d.cutoffTime || "",
+          capacity: parseInt(d.capacity, 10) || 0,
+          terrainTechnicality: parseInt(d.terrainTechnicality, 10) || 0,
+          gpxRouteLink: d.gpxRouteLink || "",
+          // Per-distance guide fields
+          aidStations: d.aidStations ? parseInt(d.aidStations, 10) || 0 : 0,
+          aidStationDetails: d.aidStationDetails || "",
+          mandatoryGear: d.mandatoryGear || "",
+          terrainNotes: d.terrainNotes || "",
+          pacerPolicy: d.pacerPolicy || "",
+          crewAccess: d.crewAccess || "",
+          crewParking: d.crewParking || "",
+          description: d.description || "",
+        }));
+
+        const primary = cleanDistances[0] || {};
+
+        await db.collection("trails").doc(activeRaceId).set(
+          {
+            distances: cleanDistances,
+            distancesOffered: cleanDistances.map((d) => d.label).filter(Boolean),
+            // Backward-compat flat fields from primary distance
+            startTime: primary.startTime || "",
+            elevationGain: primary.elevationGain || "",
+            elevation: primary.elevationGain || "",
+            cutoffTime: primary.cutoffTime || "",
+            price: primary.price || 0,
+            capacity: primary.capacity || 0,
+            terrainTechnicality: primary.terrainTechnicality || 0,
+            gpxRouteLink: primary.gpxRouteLink || "",
+            aidStations: primary.aidStations || 0,
+            aidStationDetails: primary.aidStationDetails || "",
+            mandatoryGear: primary.mandatoryGear || "",
+            checkInDetails: guideEditor.checkInDetails || "",
+            terrainNotes: primary.terrainNotes || "",
+            pacerPolicy: primary.pacerPolicy || "",
+            crewAccess: primary.crewAccess || "",
+            crewParking: primary.crewParking || "",
+            description: guideEditor.description || primary.description || "",
+            date: guideEditor.date || "",
+            location: guideEditor.location || "",
+            registrationStartDate: guideEditor.registrationStartDate || "",
+            registrationEndDate: guideEditor.registrationEndDate || "",
+            guide: {
+              links: {
+                website: guideEditor.links.website || "",
+                contactEmail: guideEditor.links.contactEmail || "",
+              },
+            },
+            updatedAt: new Date(),
+          },
+          { merge: true }
+        );
+      };
+
+      const handleBibSave = async (registrationId, bibNumber) => {
+        await db.collection("registrations").doc(registrationId).set(
+          { bibNumber: bibNumber || "", bibUpdatedAt: new Date() },
+          { merge: true }
+        );
+      };
+
+      const handleCheckIn = async (registrationId, nextValue) => {
+        await db.collection("registrations").doc(registrationId).set(
+          { checkedIn: nextValue, checkedInAt: nextValue ? new Date() : null },
+          { merge: true }
+        );
+      };
+
+      const handleResultSave = async (userId, finishTime, isOfficial) => {
+        if (!activeRaceId) return;
+        await db.collection("completed_races").doc(`${activeRaceId}_${userId}`).set(
+          {
+            userId,
+            trailId: activeRaceId,
+            finishTime: finishTime || "",
+            official: !!isOfficial,
+            updatedAt: new Date(),
+          },
+          { merge: true }
+        );
+      };
+
+      const handlePushOfficial = async () => {
+        if (!activeRaceId) return;
+        const batch = db.batch();
+        registrations.forEach((reg) => {
+          const result = resultsMap[reg.userId];
+          if (result?.official) {
+            batch.set(
+              db.collection("completed_races").doc(`${activeRaceId}_${reg.userId}`),
+              {
+                userId: reg.userId,
+                trailId: activeRaceId,
+                finishTime: result.finishTime || "",
+                official: true,
+                updatedAt: new Date(),
+              },
+              { merge: true }
+            );
+          }
+        });
+        await batch.commit();
+      };
+
+      const rosterCsv = useMemo(() => {
+        return [
+          ["Name", "Email", "Bib", "Checked In", "Privacy"],
+          ...registrations.map((reg) => {
+            const info = userMap[reg.userId] || {};
+            const isPrivate = info.isPrivate === true;
+            return [
+              info.name || info.username || "Runner",
+              isPrivate ? "Privacy Protected" : info.email || "",
+              reg.bibNumber || "",
+              reg.checkedIn ? "Yes" : "No",
+              isPrivate ? "Protected" : "Public",
+            ];
+          }),
+        ];
+      }, [registrations, userMap]);
+
+      if (!authReady) {
+        return <div className="flex items-center justify-center h-screen">Loading portal...</div>;
+      }
+
+      if (!authUser) {
+        return (
+          <div className="flex items-center justify-center h-screen">
+            <div className="glass p-8 rounded-2xl w-full max-w-md">
+              <h1 className="text-2xl font-semibold text-emerald-400 mb-4">Director Login</h1>
+              <div className="space-y-4">
+                <input
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2"
+                  placeholder="Email"
+                  value={loginState.email}
+                  onChange={(e) => setLoginState({ ...loginState, email: e.target.value })}
+                />
+                <input
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2"
+                  placeholder="Password"
+                  type="password"
+                  value={loginState.password}
+                  onChange={(e) => setLoginState({ ...loginState, password: e.target.value })}
+                />
+                {loginState.error && <p className="text-sm text-red-400">{loginState.error}</p>}
+                <button
+                  onClick={async () => {
+                    try {
+                      await auth.signInWithEmailAndPassword(loginState.email.trim().toLowerCase(), loginState.password);
+                    } catch (error) {
+                      setLoginState({ ...loginState, error: "Unable to sign in. Check credentials." });
+                    }
+                  }}
+                  className="bg-emerald-500 text-white px-4 py-2 rounded-lg w-full"
+                >
+                  Sign In
+                </button>
+                <div className="border-t border-slate-800 pt-4 space-y-2">
+                  <p className="text-xs text-slate-400">Need to reset your password?</p>
+                  <input
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs"
+                    placeholder="Enter your email"
+                    value={resetState.email}
+                    onChange={(e) =>
+                      setResetState((prev) => ({ ...prev, email: e.target.value, error: "", status: "" }))
+                    }
+                  />
+                  {resetState.error && <p className="text-xs text-red-400">{resetState.error}</p>}
+                  {resetState.status && <p className="text-xs text-emerald-300">{resetState.status}</p>}
+                  <button
+                    onClick={async () => {
+                      if (!resetState.email.trim()) {
+                        setResetState((prev) => ({ ...prev, error: "Enter your email." }));
+                        return;
+                      }
+                      try {
+                        await auth.sendPasswordResetEmail(resetState.email.trim());
+                        setResetState((prev) => ({
+                          ...prev,
+                          status: "Password reset email sent.",
+                          error: "",
+                        }));
+                      } catch (error) {
+                        setResetState((prev) => ({
+                          ...prev,
+                          error: "Unable to send reset email. Check the address.",
+                        }));
+                      }
+                    }}
+                    className="w-full bg-slate-800 text-slate-200 px-4 py-2 rounded-lg text-sm"
+                  >
+                    Send Reset Email
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (!isAuthorized) {
+        return (
+          <div className="flex items-center justify-center h-screen">
+            <div className="glass p-8 rounded-2xl w-full max-w-lg">
+              <h1 className="text-2xl font-semibold text-emerald-400 mb-4">Access Restricted</h1>
+              <p className="text-sm text-slate-300 mb-4">
+                This portal is only for directors assigned to this race.
+              </p>
+              <button
+                onClick={() => auth.signOut()}
+                className="bg-emerald-500 text-white px-4 py-2 rounded-lg"
+              >
+                Sign Out
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen flex">
+          {profile?.mustResetPassword && (
+            <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 px-4">
+              <div className="glass p-8 rounded-2xl w-full max-w-md">
+                <h2 className="text-xl font-semibold text-emerald-400 mb-2">Set Your Password</h2>
+                <p className="text-sm text-slate-300 mb-4">
+                  You're signing in with a temporary password. Please set a new one to continue.
+                </p>
+                <div className="space-y-3">
+                  <input
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2"
+                    placeholder="Temporary password"
+                    type="password"
+                    value={passwordForm.current}
+                    onChange={(e) =>
+                      setPasswordForm((prev) => ({ ...prev, current: e.target.value, error: "" }))
+                    }
+                  />
+                  <input
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2"
+                    placeholder="New password"
+                    type="password"
+                    value={passwordForm.next}
+                    onChange={(e) =>
+                      setPasswordForm((prev) => ({ ...prev, next: e.target.value, error: "" }))
+                    }
+                  />
+                  <input
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2"
+                    placeholder="Confirm new password"
+                    type="password"
+                    value={passwordForm.confirm}
+                    onChange={(e) =>
+                      setPasswordForm((prev) => ({ ...prev, confirm: e.target.value, error: "" }))
+                    }
+                  />
+                  {passwordForm.error && <p className="text-sm text-red-400">{passwordForm.error}</p>}
+                  {passwordForm.success && (
+                    <p className="text-sm text-emerald-300">Password updated successfully.</p>
+                  )}
+                  <button
+                    onClick={handlePasswordUpdate}
+                    disabled={passwordForm.saving}
+                    className={`w-full px-4 py-2 rounded-lg ${
+                      passwordForm.saving ? "bg-slate-700 text-slate-300" : "bg-emerald-500 text-white"
+                    }`}
+                  >
+                    {passwordForm.saving ? "Updating..." : "Set Password"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          <aside className="w-72 bg-slate-900/80 border-r border-emerald-500/10 flex flex-col px-6 py-8">
+            <div>
+              <h1 className="text-xl font-semibold text-emerald-400">TrailMatch Director</h1>
+              <p className="text-xs text-slate-400">Race Command Center</p>
+            </div>
+            <nav className="mt-8 space-y-2">
+              {TABS.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => setTab(item.id)}
+                  className={`w-full text-left px-4 py-2 rounded-[2rem] transition ${
+                    tab === item.id
+                      ? "bg-emerald-500 text-white shadow-glow"
+                      : "text-slate-300 hover:bg-slate-800"
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </nav>
+            <div className="mt-8">
+              <p className="text-xs uppercase tracking-widest text-slate-500 mb-2">My Races</p>
+              <div className="space-y-2 max-h-52 overflow-y-auto pr-2">
+                {races.length === 0 && (
+                  <p className="text-xs text-slate-500">No races assigned yet.</p>
+                )}
+                {races.map((race) => (
+                  <button
+                    key={race.id}
+                    onClick={() => setActiveRaceId(race.id)}
+                    className={`w-full text-left px-3 py-2 rounded-[2rem] text-sm transition ${
+                      activeRaceId === race.id
+                        ? "bg-emerald-500/20 text-emerald-200"
+                        : "text-slate-300 hover:bg-slate-800"
+                    }`}
+                  >
+                    <div className="font-semibold truncate">{race.name || "Unnamed Race"}</div>
+                    <div className="text-xs text-slate-500 truncate">{race.location || "Location TBD"}</div>
+                  </button>
+                ))}
+              </div>
+              <a
+                href="director-race-submission.html"
+                target="_blank"
+                rel="noreferrer"
+                className="mt-3 inline-flex items-center justify-center w-full text-xs text-emerald-200 bg-emerald-500/20 hover:bg-emerald-500/30 px-3 py-2 rounded-[2rem]"
+              >
+                Submit Another Race
+              </a>
+            </div>
+            <div className="mt-auto text-xs text-slate-400">
+              <p>Signed in: {authUser.email}</p>
+              <button onClick={() => auth.signOut()} className="text-emerald-300">Sign out</button>
+            </div>
+          </aside>
+
+          <main className="flex-1 px-10 py-8 overflow-y-auto">
+            {!hasAssignedRace && (
+              <div className="glass rounded-[2rem] p-6 mb-6">
+                <h3 className="text-lg font-semibold text-emerald-400">No races assigned yet</h3>
+                <p className="text-sm text-slate-300 mt-2">
+                  Your director account is active, but no race has been linked. Ask an admin to assign a race.
+                </p>
+              </div>
+            )}
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-2xl font-semibold text-emerald-400">{activeRace?.name}</h2>
+                <p className="text-sm text-slate-400">{formatDate(activeRace?.date)}</p>
+              </div>
+              <div className="bg-slate-900/70 px-4 py-2 rounded-[2rem]">
+                <p className="text-xs text-slate-300">Registrations: {registrations.length}</p>
+              </div>
+            </div>
+
+            {tab === "overview" && (
+              <div className="grid grid-cols-4 gap-6">
+                {[
+                  { label: "Total Revenue", value: formatMoney(revenue) },
+                  { label: "Registration Fill", value: `${registrations.length}/${capacityValue || "∞"} (${formatPercent(fillPercent)})` },
+                  { label: "Check-in Progress", value: `${checkIns}/${registrations.length} (${formatPercent(checkInPercent)})` },
+                  { label: "Finisher Count", value: finisherCount.toString() },
+                ].map((card) => (
+                  <div key={card.label} className="glass rounded-[2rem] p-6">
+                    <p className="text-xs text-slate-400">{card.label}</p>
+                    <p className="text-2xl font-semibold text-emerald-400 mt-2">{card.value}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {tab === "editor" && (
+              <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-8">
+                <div className="glass rounded-[2rem] p-6">
+                  <h3 className="text-lg font-semibold text-emerald-400 mb-4">Race Editor</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <ImageUploadField
+                      label="Featured Image"
+                      emoji="📷"
+                      value={editor.featuredImageUrl}
+                      onChange={(url) => setEditor({ ...editor, featuredImageUrl: url })}
+                    />
+                    <ImageUploadField
+                      label="Race Logo"
+                      emoji="🏔️"
+                      value={editor.logoUrl}
+                      onChange={(url) => setEditor({ ...editor, logoUrl: url })}
+                    />
+                    {[
+                      { key: "slogan", label: "Slogan / Tagline" },
+                      { key: "difficulty", label: "Difficulty" },
+                    ].map((field) => (
+                      <label key={field.key} className="text-xs text-slate-400">
+                        {field.label}
+                        <input
+                          className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-[2rem] px-4 py-2 text-slate-100"
+                          value={editor[field.key]}
+                          onChange={(e) => setEditor({ ...editor, [field.key]: e.target.value })}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <button
+                    onClick={handleEditorSave}
+                    className="mt-6 bg-emerald-500 text-white px-4 py-2 rounded-[2rem]"
+                  >
+                    Save Updates
+                  </button>
+                </div>
+                <div className="glass rounded-[2rem] p-4">
+                  <p className="text-xs text-slate-400 mb-3">Mobile Preview</p>
+                  <div className="phone-frame">
+                    <div className="relative h-full bg-slate-900">
+                      {editor.featuredImageUrl && (
+                        <img
+                          src={editor.featuredImageUrl}
+                          alt="preview"
+                          className="absolute inset-0 w-full h-full object-cover"
+                        />
+                      )}
+                      <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/25 to-black/5"></div>
+                      <div className="relative h-full p-4 flex flex-col items-start justify-start">
+                        <div className="space-y-2">
+                          <p className="text-white text-lg font-semibold">
+                            {activeRace?.name || "Race Name"}
+                          </p>
+                          <p className="text-slate-200 text-xs">
+                            {activeRace?.location || "Location TBD"}
+                          </p>
+                          <p className="text-slate-200 text-xs">{formatDate(activeRace?.date)}</p>
+                          <p className="text-slate-200 text-xs">Elevation: {previewElevation}</p>
+                          {previewDistances.length > 0 && (
+                            <div className="flex flex-wrap gap-2">
+                              {previewDistances.map((distance, index) => (
+                                <span
+                                  key={`${distance}-${index}`}
+                                  className="text-[10px] bg-slate-900/70 text-white px-2 py-1 rounded-full"
+                                >
+                                  {distance}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {tab === "guide" && (() => {
+              const dists = guideEditor.distances || [];
+              const safeIdx = Math.min(guideDistIdx, dists.length - 1, Math.max(dists.length - 1, 0));
+              const activeDist = dists[safeIdx] || {};
+              const updateDist = (field, value) => {
+                setGuideEditor((prev) => {
+                  const next = [...prev.distances];
+                  next[safeIdx] = { ...next[safeIdx], [field]: value };
+                  return { ...prev, distances: next };
+                });
+              };
+              return (
+              <div className="space-y-6">
+                {/* Header */}
+                <div className="glass rounded-[2rem] p-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="text-xs uppercase tracking-widest text-emerald-300">Race Guide</p>
+                    <h3 className="text-2xl font-semibold text-emerald-400">{activeRace?.name || "Race Name"}</h3>
+                    <p className="text-sm text-slate-300 mt-1">
+                      {formatDate(activeRace?.date)} · {activeRace?.location || "Location TBD"}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <a href={`race-guide.html?trailId=${activeRaceId}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/25 px-4 py-2 rounded-full text-sm font-medium transition-colors">
+                      👁️ Preview Race Guide
+                    </a>
+                  </div>
+                  <div className="w-24 h-20 rounded-xl overflow-hidden border border-emerald-500/20">
+                    {activeRace?.image || activeRace?.imageUrl ? (
+                      <img src={activeRace?.image || activeRace?.imageUrl} alt="Race" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    ) : null}
+                  </div>
+                </div>
+
+                {/* Quick Overview (event-level) */}
+                <div className="glass rounded-[2rem] p-6">
+                  <h4 className="text-lg font-semibold text-emerald-300 mb-4">Event Details</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm mb-6">
+                    {[
+                      { key: "date", label: "Race Date", type: "date" },
+                      { key: "location", label: "Location", type: "text" },
+                      { key: "registrationStartDate", label: "Registration Opens", type: "date" },
+                      { key: "registrationEndDate", label: "Registration Closes", type: "date" },
+                    ].map((field) => (
+                      <div key={field.key} className="bg-slate-900/70 rounded-xl p-4">
+                        <p className="text-slate-400 uppercase tracking-wider text-xs">{field.label}</p>
+                        <input type={field.type} className="mt-2 w-full bg-transparent text-slate-100 text-base font-semibold focus:outline-none" value={guideEditor[field.key]} onChange={(e) => setGuideEditor((prev) => ({ ...prev, [field.key]: e.target.value }))} />
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Race Description (event-level) */}
+                  <div className="mb-6">
+                    <div className="bg-slate-900/70 rounded-xl p-4">
+                      <p className="text-slate-400 uppercase tracking-wider text-xs mb-2">Race Description</p>
+                      <textarea rows={4} className="w-full bg-transparent text-slate-100 focus:outline-none resize-none" placeholder="Describe the race — what makes it unique, the course, the experience, etc." value={guideEditor.description || ""} onChange={(e) => setGuideEditor((prev) => ({ ...prev, description: e.target.value }))}></textarea>
+                    </div>
+                  </div>
+
+                  {/* Check-In Details (event-level, same for all distances) */}
+                  <div className="mb-6">
+                    <div className="bg-slate-900/70 rounded-xl p-4">
+                      <p className="text-slate-400 uppercase tracking-wider text-xs mb-2">Check-In Details</p>
+                      <textarea rows={3} className="w-full bg-transparent text-slate-100 focus:outline-none resize-none" placeholder="Check-in location and time window (applies to all distances)." value={guideEditor.checkInDetails || ""} onChange={(e) => setGuideEditor((prev) => ({ ...prev, checkInDetails: e.target.value }))}></textarea>
+                    </div>
+                  </div>
+
+                  <h5 className="text-sm font-semibold text-emerald-200 mb-3">Distances</h5>
+                  <div className="space-y-4 mb-4">
+                    {dists.map((d, idx) => (
+                      <div key={idx} className="bg-slate-900/50 rounded-xl p-4 border border-slate-800">
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="text-emerald-300 font-semibold text-sm">Distance {idx + 1}{d.raceTitle ? ` — ${d.raceTitle}` : d.label ? ` — ${d.label}` : ""}</p>
+                          {dists.length > 1 && (
+                            <button className="text-red-400 text-xs hover:text-red-300" onClick={() => { setGuideEditor((prev) => ({ ...prev, distances: prev.distances.filter((_, i) => i !== idx) })); if (safeIdx >= dists.length - 1) setGuideDistIdx(Math.max(0, dists.length - 2)); }}>✕ Remove</button>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                          {[
+                            { key: "raceTitle", label: "Race Title", ph: "e.g., Ultra Beast" },
+                            { key: "label", label: "Distance", ph: "e.g., 50K" },
+                            { key: "price", label: "Price ($)", ph: "150" },
+                            { key: "startTime", label: "Start Time", ph: "6:00 AM" },
+                            { key: "cutoffTime", label: "Cutoff", ph: "14 hours" },
+                            { key: "elevationGain", label: "Elevation", ph: "8,000ft" },
+                            { key: "capacity", label: "Capacity", ph: "200" },
+                            { key: "terrainTechnicality", label: "Technicality", ph: "1-5" },
+                            { key: "gpxRouteLink", label: "GPX Link", ph: "https://..." },
+                          ].map((f) => (
+                            <div key={f.key}>
+                              <p className="text-slate-400 text-xs mb-1">{f.label}</p>
+                              <input type="text" className="w-full bg-slate-800/70 rounded-lg px-2 py-1.5 text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500" placeholder={f.ph} value={d[f.key] || ""} onChange={(e) => setGuideEditor((prev) => { const ds = [...prev.distances]; ds[idx] = { ...ds[idx], [f.key]: e.target.value }; return { ...prev, distances: ds }; })} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <button className="w-full border-2 border-dashed border-slate-700 hover:border-emerald-500 text-slate-400 hover:text-emerald-400 rounded-xl py-2 text-sm transition-colors" onClick={() => setGuideEditor((prev) => ({ ...prev, distances: [...prev.distances, { raceTitle: "", label: "", price: "", startTime: "", elevationGain: "", cutoffTime: "", capacity: "", terrainTechnicality: "", gpxRouteLink: "", aidStations: "", aidStationDetails: "", mandatoryGear: "", checkInDetails: "", terrainNotes: "", pacerPolicy: "", crewAccess: "", crewParking: "", description: "" }] }))}>+ Add Another Distance</button>
+                </div>
+
+                {/* ── DISTANCE TAB BAR ── */}
+                {dists.length > 1 && (
+                  <div className="flex gap-2 flex-wrap">
+                    {dists.map((d, idx) => (
+                      <button key={idx} onClick={() => setGuideDistIdx(idx)} className={`px-5 py-2 rounded-full text-sm font-semibold transition-colors ${idx === safeIdx ? "bg-emerald-500 text-white" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}>{d.raceTitle || d.label || `Distance ${idx + 1}`}</button>
+                    ))}
+                  </div>
+                )}
+
+                {dists.length > 0 && (
+                  <p className="text-xs text-slate-400">Editing guide for: <span className="text-emerald-400 font-semibold">{activeDist.raceTitle || activeDist.label || `Distance ${safeIdx + 1}`}</span></p>
+                )}
+
+                {/* Race Day Essentials (per-distance) */}
+                <div className="glass rounded-[2rem] p-6">
+                  <h4 className="text-lg font-semibold text-emerald-300 mb-4">Race Day Essentials</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                    <div className="bg-slate-900/70 rounded-xl p-4">
+                      <p className="text-slate-400 uppercase tracking-wider text-xs mb-2">Mandatory Gear</p>
+                      <textarea rows={4} className="w-full bg-transparent text-slate-100 focus:outline-none resize-none" value={activeDist.mandatoryGear || ""} onChange={(e) => updateDist("mandatoryGear", e.target.value)}></textarea>
+                    </div>
+                    <div className="bg-slate-900/70 rounded-xl p-4">
+                      <p className="text-slate-400 uppercase tracking-wider text-xs mb-2">Aid Stations Count</p>
+                      <input type="number" className="w-full bg-transparent text-slate-100 focus:outline-none mb-3" value={activeDist.aidStations || ""} onChange={(e) => updateDist("aidStations", e.target.value)} />
+                      <p className="text-slate-400 uppercase tracking-wider text-xs mb-2">Aid Station Details</p>
+                      <textarea rows={3} className="w-full bg-transparent text-slate-100 focus:outline-none resize-none" value={activeDist.aidStationDetails || ""} onChange={(e) => updateDist("aidStationDetails", e.target.value)}></textarea>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Course Profile (per-distance) */}
+                <div className="glass rounded-[2rem] p-6">
+                  <h4 className="text-lg font-semibold text-emerald-300 mb-4">Course Profile</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                    <div className="bg-slate-900/70 rounded-xl p-4">
+                      <p className="text-slate-400 uppercase tracking-wider text-xs mb-2">Terrain Notes</p>
+                      <textarea rows={6} className="w-full bg-transparent text-slate-100 focus:outline-none resize-none" value={activeDist.terrainNotes || ""} onChange={(e) => updateDist("terrainNotes", e.target.value)}></textarea>
+                    </div>
+                    <div className="bg-slate-900/70 rounded-xl p-4">
+                      <p className="text-slate-400 uppercase tracking-wider text-xs mb-2">Distance-Specific Notes</p>
+                      <textarea rows={6} className="w-full bg-transparent text-slate-100 focus:outline-none resize-none" value={activeDist.description || ""} onChange={(e) => updateDist("description", e.target.value)}></textarea>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Pacer + Crew Rules (per-distance) */}
+                <div className="glass rounded-[2rem] p-6">
+                  <h4 className="text-lg font-semibold text-emerald-300 mb-4">Pacer + Crew Rules</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                    <div className="bg-slate-900/70 rounded-xl p-4">
+                      <p className="text-slate-400 uppercase tracking-wider text-xs mb-2">Pacer Policy</p>
+                      <textarea rows={3} className="w-full bg-transparent text-slate-100 focus:outline-none resize-none" value={activeDist.pacerPolicy || ""} onChange={(e) => updateDist("pacerPolicy", e.target.value)}></textarea>
+                    </div>
+                    <div className="bg-slate-900/70 rounded-xl p-4">
+                      <p className="text-slate-400 uppercase tracking-wider text-xs mb-2">Crew Access</p>
+                      <textarea rows={3} className="w-full bg-transparent text-slate-100 focus:outline-none resize-none" value={activeDist.crewAccess || ""} onChange={(e) => updateDist("crewAccess", e.target.value)}></textarea>
+                    </div>
+                    <div className="bg-slate-900/70 rounded-xl p-4">
+                      <p className="text-slate-400 uppercase tracking-wider text-xs mb-2">Crew Parking</p>
+                      <textarea rows={3} className="w-full bg-transparent text-slate-100 focus:outline-none resize-none" value={activeDist.crewParking || ""} onChange={(e) => updateDist("crewParking", e.target.value)}></textarea>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Links (event-level) */}
+                <div className="glass rounded-[2rem] p-6">
+                  <h4 className="text-lg font-semibold text-emerald-300 mb-4">Links</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                    <div className="bg-slate-900/70 rounded-xl p-4">
+                      <p className="text-slate-400 uppercase tracking-wider text-xs mb-2">Website</p>
+                      <input type="url" className="w-full bg-transparent text-slate-100 focus:outline-none" value={guideEditor.links.website} onChange={(e) => setGuideEditor((prev) => ({ ...prev, links: { ...prev.links, website: e.target.value } }))} />
+                    </div>
+                    <div className="bg-slate-900/70 rounded-xl p-4">
+                      <p className="text-slate-400 uppercase tracking-wider text-xs mb-2">Contact Email</p>
+                      <input type="email" className="w-full bg-transparent text-slate-100 focus:outline-none" value={guideEditor.links.contactEmail} onChange={(e) => setGuideEditor((prev) => ({ ...prev, links: { ...prev.links, contactEmail: e.target.value } }))} />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <button onClick={handleGuideSave} className="bg-emerald-500 text-white px-5 py-2 rounded-[2rem]">Save Guide Updates</button>
+                  <span className="text-xs text-slate-400">Saving updates will immediately refresh the public guide view.</span>
+                </div>
+              </div>
+              );
+            })()}
+
+            {tab === "roster" && (
+              <div className="glass rounded-[2rem] p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-emerald-400">Roster</h3>
+                  <button
+                    onClick={() => downloadCsv(rosterCsv, "roster.csv")}
+                    className="bg-emerald-500 text-white px-4 py-2 rounded-[2rem] text-xs"
+                  >
+                    Export Roster
+                  </button>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="min-w-[900px] text-sm">
+                    <thead className="text-slate-400">
+                      <tr>
+                        <th className="text-left py-2">Runner</th>
+                        <th className="text-left py-2">Email</th>
+                        <th className="text-left py-2">Bib</th>
+                        <th className="text-left py-2">Check-in</th>
+                        <th className="text-left py-2">Privacy</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {registrations.map((reg) => {
+                        const info = userMap[reg.userId] || {};
+                        const isPrivate = info.isPrivate === true;
+                        return (
+                          <tr key={reg.id} className="border-t border-slate-800">
+                            <td className="py-3">{info.name || info.username || "Runner"}</td>
+                            <td className="py-3 text-slate-400">
+                              {isPrivate ? "Privacy Protected" : info.email || ""}
+                            </td>
+                            <td className="py-3">{reg.bibNumber || "-"}</td>
+                            <td className="py-3">{reg.checkedIn ? "Yes" : "No"}</td>
+                            <td className="py-3 text-emerald-400">{isPrivate ? "Protected" : "Public"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {tab === "race-day" && (
+              <div className="glass rounded-[2rem] p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-emerald-400">Race Day Check-in</h3>
+                  <input
+                    className="bg-slate-950 border border-slate-800 rounded-[2rem] px-4 py-2 text-slate-100"
+                    placeholder="Search by name or bib"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-3">
+                  {filteredRegistrations.map((reg) => {
+                    const info = userMap[reg.userId] || {};
+                    return (
+                      <div key={reg.id} className="flex items-center justify-between bg-slate-950 rounded-[2rem] px-4 py-3">
+                        <div>
+                          <p className="text-slate-100">{info.name || info.username || "Runner"}</p>
+                          <p className="text-xs text-slate-400">Bib: {reg.bibNumber || "--"}</p>
+                        </div>
+                        <input
+                          defaultValue={reg.bibNumber || ""}
+                          onBlur={(e) => handleBibSave(reg.id, e.target.value)}
+                          className="bg-slate-900 border border-slate-800 rounded-[2rem] px-3 py-2 text-slate-100 w-28"
+                          placeholder="Bib #"
+                        />
+                        <button
+                          onClick={() => handleCheckIn(reg.id, !reg.checkedIn)}
+                          className={`px-4 py-2 rounded-[2rem] ${
+                            reg.checkedIn ? "bg-emerald-500 text-white" : "bg-slate-900 text-slate-300"
+                          }`}
+                        >
+                          {reg.checkedIn ? "At Start Line" : "Check In"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {tab === "results" && (
+              <div className="glass rounded-[2rem] p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-emerald-400">Results</h3>
+                  <button
+                    onClick={handlePushOfficial}
+                    className="bg-emerald-500 text-white px-4 py-2 rounded-[2rem] text-xs"
+                  >
+                    Push Official Results
+                  </button>
+                </div>
+                <div className="space-y-3">
+                  {filteredRegistrations
+                    .filter((reg) => reg.checkedIn)
+                    .map((reg) => {
+                      const info = userMap[reg.userId] || {};
+                      const result = resultsMap[reg.userId] || {};
+                      return (
+                        <div key={reg.id} className="flex items-center justify-between bg-slate-950 rounded-[2rem] px-4 py-3">
+                          <div>
+                            <p className="text-slate-100">{info.name || info.username || "Runner"}</p>
+                            <p className="text-xs text-slate-400">Bib: {reg.bibNumber || "--"}</p>
+                          </div>
+                          <input
+                            defaultValue={result.finishTime || ""}
+                            onBlur={(e) => handleResultSave(reg.userId, e.target.value, result.official)}
+                            placeholder="HH:MM:SS"
+                            className="bg-slate-900 border border-slate-800 rounded-[2rem] px-3 py-2 text-slate-100 w-40"
+                          />
+                          <button
+                            onClick={() => handleResultSave(reg.userId, result.finishTime || "", !result.official)}
+                            className={`px-4 py-2 rounded-[2rem] ${
+                              result.official ? "bg-emerald-500 text-white" : "bg-slate-900 text-slate-300"
+                            }`}
+                          >
+                            {result.official ? "Official" : "Mark Official"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<DirectorPortal />);
+  </script>
+</body>
+</html>
