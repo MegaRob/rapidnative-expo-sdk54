@@ -12,7 +12,9 @@
     "public": ".",
     "ignore": [
       "firebase.json",
-      "**/.*",
+      "**/.git/**",
+      "**/.gitignore",
+      "**/.env",
       "**/node_modules/**",
       "app/**",
       "assets/**",
@@ -32,7 +34,19 @@
       "README.md",
       "eas.json"
     ],
+    "headers": [
+      {
+        "source": "/.well-known/**",
+        "headers": [
+          { "key": "Content-Type", "value": "application/json" }
+        ]
+      }
+    ],
     "rewrites": [
+      {
+        "source": "/race/**",
+        "function": "shareRacePage"
+      },
       {
         "source": "/admin",
         "destination": "/admin-portal.html"

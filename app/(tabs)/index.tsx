@@ -14,6 +14,7 @@ import {
   MessageCircle,
   Mountain,
   Route,
+  Send,
   User,
   X
 } from "lucide-react-native";
@@ -24,6 +25,7 @@ import {
   Button,
   Dimensions,
   PanResponder,
+  Share,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -1231,6 +1233,26 @@ export default function HomeScreen() {
               locations={[0, 0.4, 0.65, 1]}
               className="absolute top-0 left-0 right-0 bottom-0"
             />
+
+            {/* Share button — top right corner of card */}
+            <View className="absolute top-4 right-4 z-10">
+              <TouchableOpacity
+                onPress={async () => {
+                  try {
+                    const shareUrl = `https://trailmatch-49203553-49000.web.app/race/${currentRace.id}`;
+                    await Share.share({
+                      message: `🏔️ Check out ${currentRace.name}${currentRace.location ? ` in ${currentRace.location}` : ''}! ${shareUrl}`,
+                      title: currentRace.name,
+                      url: shareUrl,
+                    });
+                  } catch (e) { /* user cancelled */ }
+                }}
+                className="bg-black/50 rounded-full p-2.5"
+                activeOpacity={0.7}
+              >
+                <Send size={20} color="#8BC34A" />
+              </TouchableOpacity>
+            </View>
 
             {/* Spacer to push content to bottom */}
             <View className="flex-1" />

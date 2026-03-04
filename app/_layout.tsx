@@ -4,6 +4,7 @@ import {
   ThemeProvider,
 } from "@react-navigation/native";
 import { Stack, useRouter, useSegments } from "expo-router";
+import * as Linking from "expo-linking";
 import * as Notifications from "expo-notifications";
 import { StatusBar } from "expo-status-bar";
 import "react-native-reanimated";
@@ -119,6 +120,38 @@ export default function RootLayout() {
         Notifications.removeNotificationSubscription(responseListener.current);
       }
     };
+  }, [currentUserId, router]);
+
+  // Handle deep links: trailmatch://... and https://trailmatch-49203553-49000.web.app/race/...
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    const handleDeepLink = (url: string) => {
+      try {
+        // Handle web URLs: https://trailmatch-49203553-49000.web.app/race/RACE_ID
+        const parsed = new URL(url);
+        const pathParts = parsed.pathname.split("/").filter(Boolean);
+
+        if (pathParts[0] === "race" && pathParts[1]) {
+          router.push({
+            pathname: "/race-details",
+            params: { id: pathParts[1] },
+          });
+        }
+      } catch {
+        // URL scheme links (trailmatch://race-details?id=X) are handled automatically by expo-router
+      }
+    };
+
+    // Listen for links while app is open
+    const sub = Linking.addEventListener("url", ({ url }) => handleDeepLink(url));
+
+    // Handle link that opened the app (cold start)
+    Linking.getInitialURL().then((url) => {
+      if (url) handleDeepLink(url);
+    });
+
+    return () => sub.remove();
   }, [currentUserId, router]);
 
   useEffect(() => {

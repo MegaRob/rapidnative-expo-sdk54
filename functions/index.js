@@ -1467,3 +1467,297 @@ exports.onNewRaceMatch = functions.firestore
     return null;
   });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEEP LINKING / SHARE PAGE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * HTTP function: Serves a dynamic share page for a race.
+ * URL: /race/RACE_ID
+ *
+ * - Returns HTML with dynamic Open Graph meta tags for rich social previews
+ *   (iMessage, WhatsApp, Twitter, Facebook all show race image + title + description)
+ * - Shows a beautiful race preview with "Open in App" and "Download" buttons
+ * - "Open in App" tries the trailmatch:// URL scheme first, then falls back to app stores
+ */
+exports.shareRacePage = functions.https.onRequest(async (req, res) => {
+  // Extract race ID from URL path: /race/RACE_ID
+  const pathParts = req.path.split("/").filter(Boolean);
+  // pathParts might be ["race", "RACE_ID"] or just ["RACE_ID"] depending on hosting rewrite
+  const raceId = pathParts.length >= 2 ? pathParts[pathParts.length - 1] : pathParts[0];
+
+  if (!raceId) {
+    res.status(404).send("Race not found");
+    return;
+  }
+
+  try {
+    const db = admin.firestore();
+    const trailDoc = await db.collection("trails").doc(raceId).get();
+
+    if (!trailDoc.exists) {
+      res.status(404).send("Race not found");
+      return;
+    }
+
+    const race = trailDoc.data();
+    const name = race.name || "Trail Race";
+    const location = race.location || "";
+    const date = race.date || "";
+    const description = (race.description || "").substring(0, 200);
+    const imageUrl = race.featuredImageUrl || race.imageUrl || race.image || race.logoUrl || "";
+    const distances = race.distancesOffered || [];
+    const distanceText = distances.length > 0 ? distances.slice(0, 3).join(" · ") : "";
+    const price = race.price || "";
+    const elevation = race.elevation || "";
+
+    // Build the deep link URL
+    const appSchemeUrl = `trailmatch://race-details?id=${raceId}`;
+    const webUrl = `https://trailmatch-49203553-49000.web.app/race/${raceId}`;
+
+    // Sanitize values for HTML attribute safety
+    const esc = (str) => (str || "").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/&(?!amp;|quot;|lt;|gt;)/g, "&amp;");
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${esc(name)} | TrailMatch</title>
+
+  <!-- Open Graph (Facebook, iMessage, WhatsApp) -->
+  <meta property="og:title" content="${esc(name)}">
+  <meta property="og:description" content="${esc(location)}${date ? " · " + esc(date) : ""}${distanceText ? " · " + esc(distanceText) : ""}">
+  <meta property="og:image" content="${esc(imageUrl)}">
+  <meta property="og:url" content="${esc(webUrl)}">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="TrailMatch">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="${esc(name)}">
+  <meta name="twitter:description" content="${esc(location)}${date ? " · " + esc(date) : ""}">
+  <meta name="twitter:image" content="${esc(imageUrl)}">
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0F1318;
+      color: white;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .hero {
+      width: 100%;
+      max-width: 480px;
+      position: relative;
+    }
+    .hero-img {
+      width: 100%;
+      height: 280px;
+      object-fit: cover;
+      border-radius: 0 0 24px 24px;
+    }
+    .hero-gradient {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 160px;
+      background: linear-gradient(transparent, rgba(15,19,24,0.95));
+      border-radius: 0 0 24px 24px;
+      display: flex;
+      align-items: flex-end;
+      padding: 20px;
+    }
+    .hero-text h1 {
+      font-size: 26px;
+      font-weight: 800;
+      line-height: 1.2;
+      margin-bottom: 4px;
+    }
+    .hero-text p {
+      font-size: 14px;
+      color: #a0aec0;
+    }
+    .card {
+      width: 100%;
+      max-width: 480px;
+      padding: 0 20px;
+      margin-top: 16px;
+    }
+    .info-grid {
+      background: #1E2530;
+      border-radius: 16px;
+      padding: 20px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .info-item label {
+      font-size: 11px;
+      color: #718096;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .info-item p {
+      font-size: 15px;
+      font-weight: 600;
+      margin-top: 4px;
+      color: #e2e8f0;
+    }
+    .info-item.highlight p {
+      color: #68d391;
+    }
+    .desc {
+      background: #1E2530;
+      border-radius: 16px;
+      padding: 20px;
+      margin-top: 12px;
+      font-size: 14px;
+      color: #a0aec0;
+      line-height: 1.6;
+    }
+    .buttons {
+      width: 100%;
+      max-width: 480px;
+      padding: 20px;
+      margin-top: 8px;
+    }
+    .btn-open {
+      display: block;
+      width: 100%;
+      padding: 16px;
+      background: linear-gradient(135deg, #48bb78, #38a169);
+      color: white;
+      font-size: 18px;
+      font-weight: 700;
+      text-align: center;
+      border: none;
+      border-radius: 16px;
+      cursor: pointer;
+      text-decoration: none;
+      margin-bottom: 12px;
+      transition: transform 0.1s;
+    }
+    .btn-open:active { transform: scale(0.98); }
+    .btn-download {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      background: transparent;
+      color: #68d391;
+      font-size: 16px;
+      font-weight: 600;
+      text-align: center;
+      border: 2px solid #68d391;
+      border-radius: 16px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.2s;
+    }
+    .btn-download:hover { background: rgba(104,211,145,0.1); }
+    .logo-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 24px 0 32px;
+      opacity: 0.6;
+    }
+    .logo-bar span {
+      font-size: 14px;
+      font-weight: 600;
+      color: #68d391;
+    }
+    @media (max-width: 480px) {
+      .hero-img { height: 220px; }
+      .hero-text h1 { font-size: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    ${imageUrl ? `<img class="hero-img" src="${esc(imageUrl)}" alt="${esc(name)}" onerror="this.style.display='none'">` : `<div style="width:100%;height:280px;background:linear-gradient(135deg,#1a365d,#2d3748);border-radius:0 0 24px 24px"></div>`}
+    <div class="hero-gradient">
+      <div class="hero-text">
+        <h1>${esc(name)}</h1>
+        <p>${esc(location)}</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="info-grid">
+      ${date ? `<div class="info-item"><label>📅 Date</label><p>${esc(date)}</p></div>` : ""}
+      ${location ? `<div class="info-item"><label>📍 Location</label><p>${esc(location)}</p></div>` : ""}
+      ${distanceText ? `<div class="info-item highlight"><label>🏃 Distances</label><p>${esc(distanceText)}</p></div>` : ""}
+      ${elevation ? `<div class="info-item"><label>⛰️ Elevation</label><p>${esc(elevation)}</p></div>` : ""}
+      ${price ? `<div class="info-item"><label>💰 Price</label><p>${esc(String(price))}</p></div>` : ""}
+    </div>
+    ${description ? `<div class="desc">${esc(description)}${description.length >= 200 ? "…" : ""}</div>` : ""}
+  </div>
+
+  <div class="buttons">
+    <a class="btn-open" id="openBtn" href="${esc(appSchemeUrl)}">
+      Open in TrailMatch
+    </a>
+    <a class="btn-download" href="https://apps.apple.com/app/trailmatch" id="downloadBtn">
+      Download TrailMatch — Free
+    </a>
+  </div>
+
+  <div class="logo-bar">
+    <span>🏔️ TrailMatch</span>
+  </div>
+
+  <script>
+    // Try to open the app; if it fails, redirect to app store
+    var openBtn = document.getElementById('openBtn');
+    openBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      var appUrl = '${appSchemeUrl}';
+      var startTime = Date.now();
+
+      // Try opening the app
+      window.location.href = appUrl;
+
+      // If the app didn't open within 1.5 seconds, go to app store
+      setTimeout(function() {
+        if (Date.now() - startTime < 2000) {
+          // Detect platform
+          var ua = navigator.userAgent.toLowerCase();
+          if (/iphone|ipad|ipod/.test(ua)) {
+            window.location.href = 'https://apps.apple.com/app/trailmatch';
+          } else {
+            window.location.href = 'https://play.google.com/store/apps/details?id=com.beartoe.myapp';
+          }
+        }
+      }, 1500);
+    });
+
+    // Detect platform for download button
+    var ua = navigator.userAgent.toLowerCase();
+    var dlBtn = document.getElementById('downloadBtn');
+    if (/iphone|ipad|ipod/.test(ua)) {
+      dlBtn.href = 'https://apps.apple.com/app/trailmatch';
+      dlBtn.textContent = 'Download on App Store — Free';
+    } else if (/android/.test(ua)) {
+      dlBtn.href = 'https://play.google.com/store/apps/details?id=com.beartoe.myapp';
+      dlBtn.textContent = 'Get on Google Play — Free';
+    }
+  </script>
+</body>
+</html>`;
+
+    res.set("Cache-Control", "public, max-age=300, s-maxage=600");
+    res.status(200).send(html);
+  } catch (error) {
+    console.error("Share page error:", error);
+    res.status(500).send("Something went wrong");
+  }
+});
+

@@ -325,6 +325,20 @@ export default function RaceDetailsScreen() {
     }
   };
 
+  const handleShareRace = async () => {
+    try {
+      const shareUrl = `https://trailmatch-49203553-49000.web.app/race/${raceId}`;
+      const shareMessage = `🏔️ Check out ${name}${location ? ` in ${location}` : ''}${date ? ` on ${date}` : ''}! ${shareUrl}`;
+      await Share.share({
+        message: shareMessage,
+        title: name,
+        url: shareUrl, // iOS uses this for the share preview
+      });
+    } catch (error) {
+      console.error('Error sharing race:', error);
+    }
+  };
+
   // Helper function to get string value from params (can be string or string[])
   const getParam = (param: string | string[] | undefined, fallback: string = '') => {
     if (!param) return fallback;
@@ -546,6 +560,15 @@ export default function RaceDetailsScreen() {
           className="bg-black/50 rounded-full p-2"
         >
           <ArrowLeft size={24} color="#8BC34A" />
+        </TouchableOpacity>
+      </View>
+      {/* Share Button - positioned absolutely top right */}
+      <View className="absolute right-4 z-10" style={{ top: insets.top + 8 }}>
+        <TouchableOpacity 
+          onPress={handleShareRace}
+          className="bg-black/50 rounded-full p-2"
+        >
+          <Share2 size={24} color="#8BC34A" />
         </TouchableOpacity>
       </View>
       <ScrollView className="flex-1">
