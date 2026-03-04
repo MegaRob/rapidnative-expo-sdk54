@@ -4,7 +4,7 @@ import * as Location from 'expo-location';
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { signOut } from 'firebase/auth';
-import { arrayRemove, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, Timestamp, updateDoc, where, writeBatch } from "firebase/firestore";
+import { arrayRemove, arrayUnion, collection, deleteDoc, doc, documentId, getDoc, getDocs, limit, onSnapshot, orderBy, query, setDoc, startAfter, Timestamp, updateDoc, where, writeBatch } from "firebase/firestore";
 import {
   Bookmark,
   Calendar,
@@ -38,6 +38,7 @@ import FilterModal, { RaceFilters } from '../components/FilterModal';
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const SWIPE_THRESHOLD = SCREEN_WIDTH * 0.25; // 25% of screen width to trigger swipe
 const PREFETCH_BATCH_SIZE = 10;
+const RACE_BATCH_SIZE = 100; // Load 100 races per Firestore batch (pagination)
 
 // This interface defines the structure our UI needs
 interface Trail {
@@ -87,6 +88,11 @@ export default function HomeScreen() {
     dateTo: null,
   });
   const [allRaces, setAllRaces] = useState<Trail[]>([]); // Store unfiltered races
+  // --- Pagination state ---
+  const [lastVisibleDoc, setLastVisibleDoc] = useState<any>(null);
+  const [hasMoreRaces, setHasMoreRaces] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [fetchKey, setFetchKey] = useState(0); // Increment to re-trigger initial fetch
 
   const user = auth.currentUser;
   const uid = user ? user.uid : null;
@@ -178,6 +184,8 @@ export default function HomeScreen() {
   const loadedRacesRef = useRef(loadedRaces);
   const currentIndexRef = useRef(currentIndex);
   const prefetchedImagesRef = useRef<Set<string>>(new Set());
+  const excludedIdsRef = useRef<Set<string>>(new Set());
+  const loadingMoreRef = useRef(false);
 
   // Sync refs with state
   useEffect(() => {
@@ -365,13 +373,20 @@ export default function HomeScreen() {
 
         const userDocRef = doc(db, "users", uid);
 
-        // Fire ALL Firestore queries in parallel — user doc + trails + exclusion lists
+        // Build paginated query — only load RACE_BATCH_SIZE at a time instead of ALL trails
+        const trailsQuery = query(
+          collection(db, "trails"),
+          orderBy(documentId()),
+          limit(RACE_BATCH_SIZE)
+        );
+
+        // Fire ALL Firestore queries in parallel — user doc + trails batch + exclusion lists
         const [userDoc, dislikedSnapshot, completedSnapshot, registrationsSnapshot, trailSnapshot] = await Promise.all([
           getDoc(userDocRef),
           getDocs(collection(db, "users", uid, "dislikedRaces")),
           getDocs(query(collection(db, 'completed_races'), where('userId', '==', uid))),
           getDocs(query(collection(db, 'registrations'), where('userId', '==', uid))),
-          getDocs(collection(db, "trails")),
+          getDocs(trailsQuery),
         ]);
 
         let matchedTrailIds: string[] = [];
@@ -434,6 +449,14 @@ export default function HomeScreen() {
           ...completedTrailIds,
           ...registeredTrailIds,
         ]);
+        // Save exclusion set for loadMore to use
+        excludedIdsRef.current = ignoredIds;
+
+        // Save pagination cursor
+        if (!trailSnapshot.empty) {
+          setLastVisibleDoc(trailSnapshot.docs[trailSnapshot.docs.length - 1]);
+        }
+        setHasMoreRaces(trailSnapshot.docs.length >= RACE_BATCH_SIZE);
 
         if (trailSnapshot.empty) {
           // No trails found
@@ -464,6 +487,14 @@ export default function HomeScreen() {
         // Apply filters
         let filteredRaces = applyRaceFilters(trailsList, filters);
         filteredRaces = filterByRadius(filteredRaces, filters.radius, effectLat, effectLon);
+
+        // Sort by distance (nearest first) for best swipe experience
+        filteredRaces.sort((a, b) => {
+          if (a.distance !== undefined && b.distance !== undefined) return a.distance - b.distance;
+          if (a.distance !== undefined) return -1;
+          if (b.distance !== undefined) return 1;
+          return 0;
+        });
         
         resetRacePositions(filteredRaces);
         setLoadedRaces(filteredRaces);
@@ -510,37 +541,94 @@ export default function HomeScreen() {
     };
 
     fetchTrails();
-  }, [buildTrail, uid]);
+  }, [buildTrail, uid, fetchKey]);
 
-  // --- REAL-TIME SYNC: update race cards when trails are edited in admin/director portal ---
+  // --- LOAD MORE RACES (PAGINATION) ---
+  // Fetches the next batch of races when the user is running low on unswiped cards.
+  // Uses refs to always access the latest state without stale closures.
+  const loadMoreRaces = useCallback(async () => {
+    if (loadingMoreRef.current || !hasMoreRaces || !lastVisibleDoc || !uid) return;
+
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+
+    try {
+      const nextBatchQuery = query(
+        collection(db, "trails"),
+        orderBy(documentId()),
+        startAfter(lastVisibleDoc),
+        limit(RACE_BATCH_SIZE)
+      );
+      const snapshot = await getDocs(nextBatchQuery);
+
+      if (snapshot.empty) {
+        setHasMoreRaces(false);
+        return;
+      }
+
+      // Update pagination cursor
+      setLastVisibleDoc(snapshot.docs[snapshot.docs.length - 1]);
+      setHasMoreRaces(snapshot.docs.length >= RACE_BATCH_SIZE);
+
+      // Build new trails, filtering out hidden and already-seen races
+      const excluded = excludedIdsRef.current;
+      let newTrails = snapshot.docs
+        .filter(docSnap => docSnap.data()?.isVisibleOnApp !== false)
+        .map(docSnap => buildTrail(docSnap.id, docSnap.data()))
+        .filter(trail => !excluded.has(trail.id));
+
+      // Calculate distances from user
+      if (userLatitude !== null && userLongitude !== null) {
+        newTrails = newTrails.map((trail) => {
+          if (trail.latitude !== undefined && trail.longitude !== undefined) {
+            const dist = calculateDistance(userLatitude, userLongitude, trail.latitude, trail.longitude);
+            return { ...trail, distance: dist };
+          }
+          return trail;
+        });
+      }
+
+      if (newTrails.length === 0) return; // All excluded — auto-load will trigger again if hasMore
+
+      // Sort new batch by distance (nearest first)
+      newTrails.sort((a, b) => {
+        if (a.distance !== undefined && b.distance !== undefined) return a.distance - b.distance;
+        if (a.distance !== undefined) return -1;
+        if (b.distance !== undefined) return 1;
+        return 0;
+      });
+
+      // Append to the unfiltered pool
+      setAllRaces(prev => [...prev, ...newTrails]);
+
+      // Apply current filters to the new batch and append to the swipe deck
+      let filteredNew = applyRaceFilters(newTrails, filters);
+      filteredNew = filterByRadius(filteredNew, filters.radius);
+
+      if (filteredNew.length > 0) {
+        resetRacePositions(filteredNew);
+        setLoadedRaces(prev => [...prev, ...filteredNew]);
+        prefetchRaceImages(
+          [...loadedRacesRef.current, ...filteredNew],
+          loadedRacesRef.current.length,
+          PREFETCH_BATCH_SIZE
+        );
+      }
+    } catch (error) {
+      console.error("Error loading more races:", error);
+    } finally {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    }
+  }, [hasMoreRaces, lastVisibleDoc, uid, buildTrail, userLatitude, userLongitude, filters, prefetchRaceImages]);
+
+  // Auto-load more races when the user is running low on unswiped cards
   useEffect(() => {
-    if (!uid) return;
-    let skipFirst = true; // Skip the initial snapshot (fetchTrails already handled it)
-
-    const unsubscribe = onSnapshot(collection(db, "trails"), (snapshot) => {
-      if (skipFirst) { skipFirst = false; return; }
-
-      const changes = snapshot.docChanges().filter(c => c.type === 'modified');
-      if (changes.length === 0) return;
-
-      const modifiedTrails = new Map<string, any>();
-      changes.forEach(c => modifiedTrails.set(c.doc.id, c.doc.data()));
-
-      // Helper: update a single race's data while keeping its card position intact
-      const updateRace = (race: Trail): Trail => {
-        const newData = modifiedTrails.get(race.id);
-        if (!newData) return race;
-        const updated = buildTrail(race.id, newData);
-        // Preserve the Animated position so the card doesn't jump
-        return { ...updated, position: race.position };
-      };
-
-      setAllRaces(prev => prev.map(updateRace));
-      setLoadedRaces(prev => prev.map(updateRace));
-    });
-
-    return () => unsubscribe();
-  }, [uid, buildTrail]);
+    const remainingCards = loadedRaces.length - currentIndex;
+    if (remainingCards <= 10 && hasMoreRaces && !loadingMore) {
+      loadMoreRaces();
+    }
+  }, [currentIndex, loadedRaces.length, hasMoreRaces, loadingMore, loadMoreRaces]);
 
   // Re-apply filters when filters change (but don't re-fetch from Firestore)
   useEffect(() => {
@@ -563,6 +651,14 @@ export default function HomeScreen() {
 
       let filteredRaces = applyRaceFilters(racesWithDistance, filters);
       filteredRaces = filterByRadius(filteredRaces, filters.radius);
+
+      // Sort by distance (nearest first)
+      filteredRaces.sort((a, b) => {
+        if (a.distance !== undefined && b.distance !== undefined) return a.distance - b.distance;
+        if (a.distance !== undefined) return -1;
+        if (b.distance !== undefined) return 1;
+        return 0;
+      });
       
       resetRacePositions(filteredRaces);
       setLoadedRaces(filteredRaces);
@@ -885,54 +981,30 @@ export default function HomeScreen() {
     setError(null);
 
     try {
+      // Clear the disliked list so those races come back into the pool
       const dislikedRef = collection(db, "users", uid, "dislikedRaces");
       const dislikedSnapshot = await getDocs(dislikedRef);
-
-      const dislikedIds = dislikedSnapshot.docs
-        .map(docSnap => {
-          const data = docSnap.data();
-          const trailId = typeof data?.trailId === "string" ? data.trailId : undefined;
-          return trailId ?? docSnap.id;
-        })
-        .filter((value): value is string => typeof value === "string" && value.length > 0);
-
-      if (dislikedIds.length === 0) {
-        setLoadedRaces([]);
-        setCurrentIndex(0);
-      } else {
-        const fetchedRaces = await Promise.all(
-          dislikedIds.map(async raceId => {
-            try {
-              const raceDoc = await getDoc(doc(db, "trails", raceId));
-              if (!raceDoc.exists()) {
-                console.warn(`Race with ID ${raceId} not found while refreshing.`);
-                return null;
-              }
-              return buildTrail(raceDoc.id, raceDoc.data());
-            } catch (error) {
-              console.error("Error fetching race during refresh:", error);
-              return null;
-            }
-          })
-        );
-
-        const validRaces = fetchedRaces.filter((race): race is Trail => race !== null);
-        setLoadedRaces(validRaces);
-        setCurrentIndex(0);
-      }
 
       if (!dislikedSnapshot.empty) {
         const batch = writeBatch(db);
         dislikedSnapshot.docs.forEach(docSnap => batch.delete(docSnap.ref));
         await batch.commit();
       }
+
+      // Reset pagination state and trigger a fresh fetch from the beginning
+      setLastVisibleDoc(null);
+      setHasMoreRaces(true);
+      setAllRaces([]);
+      setLoadedRaces([]);
+      setCurrentIndex(0);
+      setFetchKey(prev => prev + 1); // Triggers the main fetchTrails useEffect
     } catch (error) {
       console.error("Error refreshing races:", error);
       setError("Unable to refresh races. Please try again.");
     } finally {
       setLoading(false);
     }
-  }, [uid, buildTrail]);
+  }, [uid]);
 
   // Navigation handlers
   const handleNavigateToSaved = useCallback(() => {
@@ -1023,6 +1095,16 @@ export default function HomeScreen() {
       }
     }
   };
+
+  // Show loading spinner if we've swiped through all cards but more are being fetched
+  if ((loadedRaces.length === 0 || !currentRace) && loadingMore) {
+    return (
+      <View className="flex-1 bg-[#1A1F25] justify-center items-center">
+        <ActivityIndicator size="large" color="#8BC34A" />
+        <Text className="text-white mt-4">Loading more races...</Text>
+      </View>
+    );
+  }
 
   if (loadedRaces.length === 0) {
     return (
@@ -1192,57 +1274,86 @@ export default function HomeScreen() {
                 </Text>
               </View>
 
-              {/* Elevation & Distances */}
-              {currentRace.elevationsByDistance && currentRace.elevationsByDistance.length > 1 ? (
-                // Multi-distance: show each distance with its elevation
-                <View className="mt-1.5">
-                  {currentRace.elevationsByDistance.map((item, idx) => (
-                    <View key={idx} className="flex-row items-center mt-1">
-                      <Route size={16} color="#8BC34A" />
-                      <Text
-                        className="text-white text-base ml-2"
-                        style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
-                      >
-                        {item.label}
-                      </Text>
-                      <View className="ml-3">
-                        <Mountain size={14} color="#8BC34A" />
-                      </View>
-                      <Text
-                        className="text-gray-300 text-sm ml-1"
-                        style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
-                      >
-                        {item.elevation}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              ) : (
-                // Single distance: show elevation and distance on separate lines
-                <>
-                  <View className="flex-row items-center mt-1.5">
-                    <Mountain size={16} color="#8BC34A" />
-                    <Text
-                      className="text-white text-base ml-2"
-                      style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
-                    >
-                      {currentRace.elevation} elevation
-                    </Text>
-                  </View>
+              {/* Elevation & Distances — cap at 3 visible, "+X more" for the rest */}
+              {(() => {
+                const MAX_VISIBLE = 3;
+                const elevByDist = currentRace.elevationsByDistance || [];
+                const distOffered = currentRace.distancesOffered || [];
 
-                  {currentRace.distancesOffered && currentRace.distancesOffered.length > 0 && (
-                    <View className="flex-row items-center mt-1.5">
-                      <Route size={16} color="#8BC34A" />
-                      <Text
-                        className="text-white text-base ml-2"
-                        style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
-                      >
-                        {currentRace.distancesOffered.join(' / ')}
-                      </Text>
+                if (elevByDist.length > 1) {
+                  // Multi-distance with elevation data
+                  const visible = elevByDist.slice(0, MAX_VISIBLE);
+                  const extra = elevByDist.length - MAX_VISIBLE;
+                  return (
+                    <View className="mt-1.5">
+                      {visible.map((item, idx) => (
+                        <View key={idx} className="flex-row items-center mt-1">
+                          <Route size={16} color="#8BC34A" />
+                          <Text
+                            className="text-white text-base ml-2"
+                            style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
+                          >
+                            {item.label}
+                          </Text>
+                          {item.elevation ? (
+                            <>
+                              <View className="ml-3">
+                                <Mountain size={14} color="#8BC34A" />
+                              </View>
+                              <Text
+                                className="text-gray-300 text-sm ml-1"
+                                style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
+                              >
+                                {item.elevation}
+                              </Text>
+                            </>
+                          ) : null}
+                        </View>
+                      ))}
+                      {extra > 0 && (
+                        <Text
+                          className="text-gray-400 text-sm mt-1 ml-6"
+                          style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
+                        >
+                          +{extra} more distance{extra > 1 ? 's' : ''}
+                        </Text>
+                      )}
                     </View>
-                  )}
-                </>
-              )}
+                  );
+                } else {
+                  // Single distance or flat list
+                  return (
+                    <>
+                      {currentRace.elevation ? (
+                        <View className="flex-row items-center mt-1.5">
+                          <Mountain size={16} color="#8BC34A" />
+                          <Text
+                            className="text-white text-base ml-2"
+                            style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
+                          >
+                            {currentRace.elevation} elevation
+                          </Text>
+                        </View>
+                      ) : null}
+
+                      {distOffered.length > 0 && (
+                        <View className="flex-row items-center flex-wrap mt-1.5">
+                          <Route size={16} color="#8BC34A" />
+                          <Text
+                            className="text-white text-base ml-2"
+                            style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
+                            numberOfLines={1}
+                          >
+                            {distOffered.length <= MAX_VISIBLE
+                              ? distOffered.join(' · ')
+                              : distOffered.slice(0, MAX_VISIBLE).join(' · ') + ` +${distOffered.length - MAX_VISIBLE} more`}
+                          </Text>
+                        </View>
+                      )}
+                    </>
+                  );
+                }
+              })()}
 
               {/* Miles away */}
               {currentRace.distance !== undefined && (

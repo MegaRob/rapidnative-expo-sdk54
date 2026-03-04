@@ -1,5 +1,5 @@
 import { useNavigation, useRouter } from 'expo-router';
-import { arrayRemove, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, Timestamp, updateDoc, where } from "firebase/firestore";
+import { arrayRemove, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, Timestamp, updateDoc, where } from "firebase/firestore";
 import { ArrowLeft, Calendar, Clock, MapPin, Pin, Trophy, X } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, FlatList, Image, LayoutAnimation, Pressable, Text, TouchableOpacity, View } from 'react-native';
@@ -731,91 +731,9 @@ export default function SavedRacesScreen() {
     fetchAllData();
   }, [user]);
 
-  // Real-time sync: listen for changes to trail documents so admin/director edits show live
-  useEffect(() => {
-    if (!user) return;
-    let skipFirst = true;
-
-    const unsubscribe = onSnapshot(collection(db, 'trails'), (snapshot) => {
-      if (skipFirst) { skipFirst = false; return; }
-
-      const changes = snapshot.docChanges().filter(c => c.type === 'modified');
-      if (changes.length === 0) return;
-
-      const modified = new Map<string, any>();
-      changes.forEach(c => modified.set(c.doc.id, c.doc.data()));
-
-      // Update liked races
-      setLikedRaces(prev => prev.map(race => {
-        const newData = modified.get(race.trailId || race.id);
-        if (!newData) return race;
-        return {
-          ...race,
-          ...newData,
-          id: race.id,
-          trailId: race.trailId,
-          matchId: race.matchId,
-          isPinned: race.isPinned,
-          name: newData.name || race.name,
-          date: newData.date ?? race.date,
-          location: newData.location || race.location,
-          imageUrl: getRaceImageUrl(newData),
-        };
-      }));
-
-      // Update registered races
-      setRegisteredRaces(prev => prev.map(race => {
-        const newData = modified.get(race.trailId || race.id);
-        if (!newData) return race;
-        return {
-          ...race,
-          ...newData,
-          id: race.id,
-          trailId: race.trailId,
-          registrationId: race.registrationId,
-          name: newData.name || race.name,
-          date: newData.date ?? race.date,
-          location: newData.location || race.location,
-          imageUrl: getRaceImageUrl(newData),
-          registeredAt: race.registeredAt,
-          bibNumber: race.bibNumber,
-          shirtSize: race.shirtSize,
-          firstName: race.firstName,
-          lastName: race.lastName,
-          fullName: race.fullName,
-        };
-      }));
-
-      // Update completed races
-      setCompletedRaces(prev => prev.map(race => {
-        const newData = modified.get(race.trailId || race.id);
-        if (!newData) return race;
-        return {
-          ...race,
-          ...newData,
-          id: race.id,
-          trailId: race.trailId,
-          completedId: race.completedId,
-          name: newData.name || race.name,
-          date: newData.date ?? race.date,
-          location: newData.location || race.location,
-          imageUrl: getRaceImageUrl(newData),
-          completedAt: race.completedAt,
-          finishTime: race.finishTime,
-          photo: race.photo,
-        };
-      }));
-
-      // Update trail cache
-      setTrailCache(prev => {
-        const next = new Map(prev);
-        modified.forEach((data, id) => next.set(id, data));
-        return next;
-      });
-    });
-
-    return () => unsubscribe();
-  }, [user]);
+  // NOTE: Removed expensive onSnapshot on ALL trails collection.
+  // Race data refreshes on screen focus via useFocusEffect above.
+  // This saves thousands of Firestore reads per session.
 
   const handleUnsaveRace = async (raceId: string) => {
     if (!user) return;

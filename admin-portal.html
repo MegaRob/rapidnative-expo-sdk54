@@ -785,18 +785,40 @@
         }
       };
 
+      const TRAIL_STATES = [
+        "UT", "CO", "OR", "CA", "NC", "MT", "WA", "VA", "NY", "PA",
+        "VT", "NH", "GA", "TN", "AZ", "NM", "ID", "WY", "ME", "WV",
+      ];
+      const [syncProgress, setSyncProgress] = React.useState("");
+
       const handleRunSignupSync = async () => {
         if (!isAdmin) return;
         setIsSyncingRunSignup(true);
         setSyncResult(null);
+        let grandTotal = 0;
+        let grandSkipped = 0;
+        const syncFn = functions.httpsCallable("manualRunSignupSync");
+
         try {
-          const syncFn = functions.httpsCallable("manualRunSignupSync");
-          const result = await syncFn({});
-          setSyncResult(result.data);
-          alert(`RunSignup sync complete!\n${result.data.imported} new races imported\n${result.data.updated} races updated`);
+          for (let i = 0; i < TRAIL_STATES.length; i++) {
+            const st = TRAIL_STATES[i];
+            setSyncProgress(`Syncing ${st}... (${i + 1}/${TRAIL_STATES.length})`);
+            try {
+              const result = await syncFn({ state: st });
+              grandTotal += result.data.imported || 0;
+              grandSkipped += result.data.skipped || 0;
+              setSyncProgress(`${st} done — ${result.data.imported} new. Total so far: ${grandTotal}`);
+            } catch (stateErr) {
+              console.error(`Sync error for ${st}:`, stateErr);
+              setSyncProgress(`${st} failed — continuing...`);
+            }
+          }
+          setSyncResult({ imported: grandTotal, skipped: grandSkipped });
+          alert(`RunSignup sync complete!\n${grandTotal} new races imported\n${grandSkipped} already existed`);
         } catch (err) {
           alert("Sync failed: " + (err.message || err));
         }
+        setSyncProgress("");
         setIsSyncingRunSignup(false);
       };
 
@@ -1205,7 +1227,19 @@
                       onChange={(e) => setRaceSearch(e.target.value)}
                     />
                     <button
-                      onClick={handleBackfillCoordinates}
+                      onClick={async () => {
+                        if (isBackfilling) return;
+                        setIsBackfilling(true);
+                        try {
+                          const geocodeFn = functions.httpsCallable("geocodeTrails");
+                          const res = await geocodeFn({});
+                          const d = res.data;
+                          alert(`Geocoding complete!\n${d.geocoded} locations resolved\n${d.updated} races updated\n${d.failed} failed`);
+                        } catch (err) {
+                          alert("Geocoding failed: " + (err.message || err));
+                        }
+                        setIsBackfilling(false);
+                      }}
                       disabled={isBackfilling}
                       className={`text-xs px-3 py-2 rounded-lg ${
                         isBackfilling
@@ -1213,7 +1247,7 @@
                           : "bg-emerald-500 text-white"
                       }`}
                     >
-                      {isBackfilling ? "Backfilling..." : "Backfill Coordinates"}
+                      {isBackfilling ? "📍 Geocoding..." : "📍 Geocode Coordinates"}
                     </button>
                     <button
                       onClick={handleBackfillApprovedRequests}
@@ -1235,7 +1269,7 @@
                           : "bg-orange-500 text-white"
                       }`}
                     >
-                      {isSyncingRunSignup ? "Syncing RunSignup..." : "🔄 Sync RunSignup Races"}
+                      {isSyncingRunSignup ? (syncProgress || "Syncing RunSignup...") : "🔄 Sync RunSignup Races"}
                     </button>
                   </div>
                 </div>

@@ -1,7 +1,7 @@
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const { Expo } = require("expo-server-sdk");
-const fetch = require("node-fetch");
+const https = require("https");
 
 admin.initializeApp();
 
@@ -732,19 +732,44 @@ function formatRSDate(dateStr) {
 /**
  * Fetch races from RunSignup for a single state + page
  */
+/**
+ * Make an HTTPS GET request and return parsed JSON (using native Node.js https)
+ */
+function httpsGet(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch (e) {
+          console.error("JSON parse error:", data.slice(0, 200));
+          reject(e);
+        }
+      });
+    }).on("error", reject);
+  });
+}
+
 async function fetchRunSignupRaces(state, page = 1) {
-  const startDate = new Date().toISOString().split("T")[0].replace(/-/g, "/");
-  const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0].replace(/-/g, "/");
+  // RunSignup expects YYYY-MM-DD format
+  const now = new Date();
+  const startDate = now.toISOString().split("T")[0]; // e.g. "2026-03-04"
+  const endDate = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
 
   const url = `https://runsignup.com/Rest/races?format=json&only_trail_races=T&state=${state}&start_date=${startDate}&end_date=${endDate}&results_per_page=250&page=${page}`;
+  console.log(`Fetching: ${url}`);
 
-  const response = await fetch(url);
-  if (!response.ok) {
-    console.error(`RunSignup API error for ${state} page ${page}: ${response.status}`);
+  try {
+    const data = await httpsGet(url);
+    const races = (data.races || []).map((r) => r.race);
+    console.log(`${state}: API returned ${races.length} races`);
+    return races;
+  } catch (err) {
+    console.error(`Fetch error for ${state}:`, err.message);
     return [];
   }
-  const data = await response.json();
-  return (data.races || []).map((r) => r.race);
 }
 
 /**
@@ -753,9 +778,7 @@ async function fetchRunSignupRaces(state, page = 1) {
 async function fetchRaceDetails(raceId) {
   const url = `https://runsignup.com/Rest/race/${raceId}?format=json&include_events=T`;
   try {
-    const response = await fetch(url);
-    if (!response.ok) return null;
-    const data = await response.json();
+    const data = await httpsGet(url);
     return data.race || null;
   } catch (err) {
     console.error(`Error fetching race ${raceId} details:`, err.message);
@@ -843,68 +866,65 @@ exports.syncRunSignupRaces = functions
   .pubsub.schedule("0 2 * * *") // Every day at 2:00 AM
   .timeZone("America/Chicago")
   .onRun(async (context) => {
-    console.log("Starting RunSignup race sync...");
+    console.log("Starting daily RunSignup race sync...");
 
     const db = admin.firestore();
     let totalImported = 0;
-    let totalUpdated = 0;
     let totalSkipped = 0;
+
+    // Load all existing runsignup race IDs once
+    const existingSnap = await db
+      .collection("trails")
+      .where("source", "==", "runsignup")
+      .select("runsignupRaceId")
+      .get();
+    const existingRaceIds = new Set();
+    existingSnap.forEach((doc) => {
+      const rid = doc.data().runsignupRaceId;
+      if (rid !== undefined) existingRaceIds.add(rid);
+    });
+    console.log(`Found ${existingRaceIds.size} existing RunSignup races in Firestore`);
 
     for (const state of TRAIL_STATES) {
       try {
         const races = await fetchRunSignupRaces(state);
         console.log(`${state}: Found ${races.length} trail races`);
 
-        for (const race of races) {
-          try {
-            // Check if we already have this race
-            const existingQuery = await db
-              .collection("trails")
-              .where("runsignupRaceId", "==", race.race_id)
-              .limit(1)
-              .get();
+        const newRaces = races.filter((r) => !existingRaceIds.has(r.race_id));
+        totalSkipped += (races.length - newRaces.length);
 
-            if (!existingQuery.empty) {
-              // Update existing race (date, registration status, etc.)
-              const existingDoc = existingQuery.docs[0];
-              await existingDoc.ref.update({
-                date: formatRSDate(race.next_date),
-                isRegistrationOpen: race.is_registration_open === "T",
-                lastSyncedAt: admin.firestore.FieldValue.serverTimestamp(),
-              });
-              totalUpdated++;
-              continue;
-            }
-
-            // Fetch detailed event info for new races
-            const details = await fetchRaceDetails(race.race_id);
-            const trailData = mapRunSignupToTrail(race, details);
-
-            await db.collection("trails").add(trailData);
-            totalImported++;
-
-            // Small delay to avoid hammering RunSignup API
-            await new Promise((resolve) => setTimeout(resolve, 100));
-          } catch (raceErr) {
-            console.error(`Error processing race ${race.race_id}:`, raceErr.message);
-            totalSkipped++;
-          }
+        if (newRaces.length === 0) {
+          console.log(`${state}: No new races to import`);
+          continue;
         }
 
-        // Small delay between states
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        // Batch write new races
+        const BATCH_SIZE = 400;
+        for (let i = 0; i < newRaces.length; i += BATCH_SIZE) {
+          const batch = db.batch();
+          const chunk = newRaces.slice(i, i + BATCH_SIZE);
+          for (const race of chunk) {
+            const trailData = mapRunSignupToTrail(race, null);
+            batch.set(db.collection("trails").doc(), trailData);
+          }
+          await batch.commit();
+          totalImported += chunk.length;
+        }
+
+        console.log(`${state}: Imported ${newRaces.length} new races`);
       } catch (stateErr) {
         console.error(`Error processing state ${state}:`, stateErr.message);
       }
     }
 
-    console.log(`RunSignup sync complete: ${totalImported} imported, ${totalUpdated} updated, ${totalSkipped} skipped`);
+    console.log(`Daily sync complete: ${totalImported} imported, ${totalSkipped} already existed`);
     return null;
   });
 
 /**
  * Callable function: Manually trigger a RunSignup sync (for admin use)
- * Can optionally sync a single state for testing.
+ * Syncs ONE state at a time. The admin portal calls this per state in a loop.
+ * Pass { state: "CO" } to sync a single state — or omit for all states (not recommended).
  */
 exports.manualRunSignupSync = functions
   .runWith({ timeoutSeconds: 540, memory: "512MB" })
@@ -913,51 +933,185 @@ exports.manualRunSignupSync = functions
       throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
     }
 
-    // Check if admin
+    // Check if admin (by role or email)
     const userSnap = await admin.firestore().collection("users").doc(context.auth.uid).get();
-    if (!userSnap.exists || userSnap.data().role !== "admin") {
+    const isAdmin = (userSnap.exists && userSnap.data().role === "admin") ||
+      context.auth.token.email === "rolsen83@gmail.com";
+    if (!isAdmin) {
       throw new functions.https.HttpsError("permission-denied", "Admin access required.");
     }
 
-    const targetStates = data?.states || TRAIL_STATES;
+    // Determine which states to sync
+    const targetStates = data?.state
+      ? [data.state]                         // Single state
+      : (data?.states || TRAIL_STATES);      // Array or all
+
     const db = admin.firestore();
     let totalImported = 0;
     let totalUpdated = 0;
+    let totalSkipped = 0;
 
     for (const state of targetStates) {
-      const races = await fetchRunSignupRaces(state);
-      console.log(`Manual sync — ${state}: ${races.length} races`);
+      try {
+        const races = await fetchRunSignupRaces(state);
+        console.log(`Manual sync — ${state}: ${races.length} races from API`);
 
-      for (const race of races) {
-        try {
-          const existingQuery = await db
-            .collection("trails")
-            .where("runsignupRaceId", "==", race.race_id)
-            .limit(1)
-            .get();
+        if (races.length === 0) continue;
 
-          if (!existingQuery.empty) {
-            const existingDoc = existingQuery.docs[0];
-            await existingDoc.ref.update({
-              date: formatRSDate(race.next_date),
-              isRegistrationOpen: race.is_registration_open === "T",
-              lastSyncedAt: admin.firestore.FieldValue.serverTimestamp(),
-            });
-            totalUpdated++;
-            continue;
+        // Build a set of existing runsignupRaceIds to avoid querying one by one
+        const existingSnap = await db
+          .collection("trails")
+          .where("source", "==", "runsignup")
+          .where("location", ">=", "")  // just to narrow
+          .get();
+
+        const existingRaceIds = new Set();
+        existingSnap.forEach((doc) => {
+          const rid = doc.data().runsignupRaceId;
+          if (rid !== undefined) existingRaceIds.add(rid);
+        });
+
+        // Filter to only truly new races
+        const newRaces = races.filter((r) => !existingRaceIds.has(r.race_id));
+        totalSkipped += (races.length - newRaces.length);
+        console.log(`${state}: ${newRaces.length} new, ${races.length - newRaces.length} already exist`);
+
+        // Batch-write new races (max 500 per batch)
+        const BATCH_SIZE = 400;
+        for (let i = 0; i < newRaces.length; i += BATCH_SIZE) {
+          const batch = db.batch();
+          const chunk = newRaces.slice(i, i + BATCH_SIZE);
+
+          for (const race of chunk) {
+            // Map from list data only (no detail fetch = fast)
+            const trailData = mapRunSignupToTrail(race, null);
+            const newRef = db.collection("trails").doc();
+            batch.set(newRef, trailData);
           }
 
-          const details = await fetchRaceDetails(race.race_id);
-          const trailData = mapRunSignupToTrail(race, details);
-          await db.collection("trails").add(trailData);
-          totalImported++;
-
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        } catch (err) {
-          console.error(`Error importing race ${race.race_id}:`, err.message);
+          await batch.commit();
+          totalImported += chunk.length;
+          console.log(`${state}: Batch wrote ${chunk.length} races`);
         }
+      } catch (stateErr) {
+        console.error(`Error syncing ${state}:`, stateErr.message);
       }
     }
 
-    return { success: true, imported: totalImported, updated: totalUpdated };
+    console.log(`Manual sync done: ${totalImported} imported, ${totalUpdated} updated, ${totalSkipped} skipped`);
+    return { success: true, imported: totalImported, updated: totalUpdated, skipped: totalSkipped };
   });
+
+// ─── Geocoding (OpenStreetMap Nominatim — free, no key) ─────────────────────
+
+/**
+ * Geocode a city/location string → { lat, lon } using Nominatim
+ */
+function geocodeLocation(locationStr) {
+  const q = encodeURIComponent(locationStr);
+  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${q}`;
+
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers: { "User-Agent": "TrailMatch/1.0" } }, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", () => {
+        try {
+          const results = JSON.parse(data);
+          if (results.length > 0) {
+            resolve({
+              lat: parseFloat(results[0].lat),
+              lon: parseFloat(results[0].lon),
+            });
+          } else {
+            resolve(null);
+          }
+        } catch (e) {
+          reject(e);
+        }
+      });
+    }).on("error", reject);
+  });
+}
+
+/**
+ * Callable function: Geocode all trails that are missing coordinates
+ * Groups by unique location to minimize API calls, respects 1 req/sec rate limit
+ */
+exports.geocodeTrails = functions
+  .runWith({ timeoutSeconds: 540, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
+    }
+    const userSnap = await admin.firestore().collection("users").doc(context.auth.uid).get();
+    const isAdminUser = (userSnap.exists && userSnap.data().role === "admin") ||
+      context.auth.token.email === "rolsen83@gmail.com";
+    if (!isAdminUser) {
+      throw new functions.https.HttpsError("permission-denied", "Admin access required.");
+    }
+
+    const db = admin.firestore();
+
+    // Get all trails missing coordinates
+    const snap = await db.collection("trails").get();
+    const missingDocs = snap.docs.filter((doc) => {
+      const d = doc.data();
+      return !Number.isFinite(d.latitude) || !Number.isFinite(d.longitude);
+    });
+
+    console.log(`Found ${missingDocs.length} trails missing coordinates`);
+
+    // Group docs by location string to avoid duplicate geocode calls
+    const locationGroups = {};
+    for (const doc of missingDocs) {
+      const loc = (doc.data().location || "").trim();
+      if (!loc || loc === "Unknown") continue;
+      if (!locationGroups[loc]) locationGroups[loc] = [];
+      locationGroups[loc].push(doc.ref);
+    }
+
+    const uniqueLocations = Object.keys(locationGroups);
+    console.log(`${uniqueLocations.length} unique locations to geocode`);
+
+    let geocoded = 0;
+    let failed = 0;
+    let updated = 0;
+
+    for (const loc of uniqueLocations) {
+      try {
+        const coords = await geocodeLocation(loc);
+        if (coords) {
+          // Batch update all docs with this location
+          const refs = locationGroups[loc];
+          const BATCH_SIZE = 400;
+          for (let i = 0; i < refs.length; i += BATCH_SIZE) {
+            const batch = db.batch();
+            const chunk = refs.slice(i, i + BATCH_SIZE);
+            for (const ref of chunk) {
+              batch.update(ref, {
+                latitude: coords.lat,
+                longitude: coords.lon,
+              });
+            }
+            await batch.commit();
+            updated += chunk.length;
+          }
+          geocoded++;
+        } else {
+          failed++;
+          console.log(`No results for: "${loc}"`);
+        }
+      } catch (err) {
+        failed++;
+        console.error(`Geocode error for "${loc}":`, err.message);
+      }
+
+      // Nominatim rate limit: 1 request per second
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+    }
+
+    console.log(`Geocoding done: ${geocoded} locations resolved, ${updated} trails updated, ${failed} failed`);
+    return { success: true, geocoded, updated, failed, totalLocations: uniqueLocations.length };
+  });
+
