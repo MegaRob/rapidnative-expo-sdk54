@@ -46,13 +46,29 @@ export async function registerForPushNotificationsAsync(): Promise<string | null
     });
     const token = tokenData.data;
 
-    // Android needs a notification channel
+    // Android needs notification channels
     if (Platform.OS === 'android') {
       await Notifications.setNotificationChannelAsync('chat', {
         name: 'Chat Messages',
         importance: Notifications.AndroidImportance.HIGH,
         vibrationPattern: [0, 250, 250, 250],
         lightColor: '#10b981',
+        sound: 'default',
+      });
+
+      await Notifications.setNotificationChannelAsync('race_reminders', {
+        name: 'Race Reminders',
+        description: 'Upcoming race reminders and weekly new race digests',
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#8BC34A',
+        sound: 'default',
+      });
+
+      await Notifications.setNotificationChannelAsync('social', {
+        name: 'Social Updates',
+        description: 'When other runners save the same races as you',
+        importance: Notifications.AndroidImportance.DEFAULT,
         sound: 'default',
       });
     }

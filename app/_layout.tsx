@@ -74,7 +74,32 @@ export default function RootLayout() {
     responseListener.current = Notifications.addNotificationResponseReceivedListener(
       (response) => {
         const data = response.notification.request.content.data;
-        if (data?.chatId && data?.buddyId) {
+        const notifType = data?.type as string;
+
+        if (notifType === "chat_message" || notifType === "chat_invite") {
+          // Navigate to the specific chat
+          if (data?.chatId && data?.buddyId) {
+            router.push({
+              pathname: "/chat",
+              params: {
+                chatId: data.chatId as string,
+                buddyId: data.buddyId as string,
+              },
+            });
+          }
+        } else if (notifType === "race_reminder" || notifType === "new_race_match") {
+          // Navigate to race details page
+          if (data?.trailId) {
+            router.push({
+              pathname: "/race-details",
+              params: { id: data.trailId as string },
+            });
+          }
+        } else if (notifType === "weekly_digest") {
+          // Navigate to the swipe screen to discover new races
+          router.push("/(tabs)");
+        } else if (data?.chatId && data?.buddyId) {
+          // Fallback: legacy chat notifications without type field
           router.push({
             pathname: "/chat",
             params: {

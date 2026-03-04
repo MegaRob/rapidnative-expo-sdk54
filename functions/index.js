@@ -1115,3 +1115,355 @@ exports.geocodeTrails = functions
     return { success: true, geocoded, updated, failed, totalLocations: uniqueLocations.length };
   });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENGAGEMENT PUSH NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Helper: Parse various date formats into a JavaScript Date object.
+ * Handles Firestore Timestamps, ISO strings ("2026-03-15"), and natural strings ("March 15, 2026").
+ */
+function parseRaceDate(dateValue) {
+  if (!dateValue) return null;
+  // Firestore Timestamp object (has _seconds or toDate)
+  if (dateValue._seconds) return new Date(dateValue._seconds * 1000);
+  if (typeof dateValue.toDate === "function") return dateValue.toDate();
+  // String dates
+  if (typeof dateValue === "string") {
+    const trimmed = dateValue.trim();
+    if (!trimmed) return null;
+    const parsed = new Date(trimmed);
+    if (!isNaN(parsed.getTime())) return parsed;
+  }
+  return null;
+}
+
+/**
+ * Helper: Check if two dates fall on the same calendar day.
+ */
+function isSameDay(d1, d2) {
+  return (
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate()
+  );
+}
+
+/**
+ * Helper: Calculate distance between two lat/lon pairs in miles (Haversine formula).
+ */
+function haversineDistance(lat1, lon1, lat2, lon2) {
+  const toRad = (v) => (v * Math.PI) / 180;
+  const R = 3959; // Earth radius in miles
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// ─── 1. Race Reminders: Daily at 9:00 AM CT ─────────────────────────────────
+// Notifies users when their saved/registered races are coming up.
+// Sends at 14 days, 7 days, 3 days, and 1 day before the race.
+exports.sendRaceReminders = functions
+  .runWith({ timeoutSeconds: 300, memory: "256MB" })
+  .pubsub.schedule("0 9 * * *") // 9:00 AM every day
+  .timeZone("America/Chicago")
+  .onRun(async () => {
+    const db = admin.firestore();
+    const now = new Date();
+    now.setHours(0, 0, 0, 0); // Normalize to start of day
+
+    const thresholds = [
+      { days: 14, emoji: "📅", message: "is in 2 weeks" },
+      { days: 7,  emoji: "🏃", message: "is in 1 week" },
+      { days: 3,  emoji: "⏰", message: "is in 3 days" },
+      { days: 1,  emoji: "🔥", message: "is TOMORROW" },
+    ];
+
+    // 1. Build a map of trailId → Set<userId> from matches + registrations
+    const [matchesSnap, regsSnap] = await Promise.all([
+      db.collection("matches").get(),
+      db.collection("registrations").get(),
+    ]);
+
+    const trailUserMap = new Map(); // trailId → Set<userId>
+    matchesSnap.forEach((doc) => {
+      const { trailId, userId } = doc.data();
+      if (!trailId || !userId) return;
+      if (!trailUserMap.has(trailId)) trailUserMap.set(trailId, new Set());
+      trailUserMap.get(trailId).add(userId);
+    });
+    regsSnap.forEach((doc) => {
+      const { trailId, userId } = doc.data();
+      if (!trailId || !userId) return;
+      if (!trailUserMap.has(trailId)) trailUserMap.set(trailId, new Set());
+      trailUserMap.get(trailId).add(userId);
+    });
+
+    if (trailUserMap.size === 0) {
+      console.log("Race reminders: No saved/registered races found.");
+      return null;
+    }
+
+    // 2. Fetch only the trails that users have saved (not all trails)
+    const trailIds = Array.from(trailUserMap.keys());
+    const trailDataMap = new Map(); // trailId → { name, date }
+    const BATCH = 30;
+    for (let i = 0; i < trailIds.length; i += BATCH) {
+      const chunk = trailIds.slice(i, i + BATCH);
+      const promises = chunk.map((id) => db.collection("trails").doc(id).get());
+      const docs = await Promise.all(promises);
+      docs.forEach((doc) => {
+        if (doc.exists) {
+          const d = doc.data();
+          trailDataMap.set(doc.id, { name: d.name || "Unnamed Race", date: d.date });
+        }
+      });
+    }
+
+    // 3. For each threshold, find matching trails and send notifications
+    let totalSent = 0;
+
+    // Pre-fetch all user push tokens in one pass
+    const allUserIds = new Set();
+    trailUserMap.forEach((userIds) => userIds.forEach((uid) => allUserIds.add(uid)));
+
+    const userTokenMap = new Map(); // userId → { token, name }
+    const userIdArr = Array.from(allUserIds);
+    for (let i = 0; i < userIdArr.length; i += BATCH) {
+      const chunk = userIdArr.slice(i, i + BATCH);
+      const promises = chunk.map((uid) => db.collection("users").doc(uid).get());
+      const docs = await Promise.all(promises);
+      docs.forEach((doc) => {
+        if (doc.exists) {
+          const d = doc.data();
+          const token = d.expoPushToken;
+          if (token && Expo.isExpoPushToken(token)) {
+            userTokenMap.set(doc.id, { token, name: d.username || d.name || "Runner" });
+          }
+        }
+      });
+    }
+
+    for (const threshold of thresholds) {
+      const targetDate = new Date(now);
+      targetDate.setDate(targetDate.getDate() + threshold.days);
+
+      const messages = [];
+
+      trailDataMap.forEach((trail, trailId) => {
+        const raceDate = parseRaceDate(trail.date);
+        if (!raceDate || !isSameDay(raceDate, targetDate)) return;
+
+        const userIds = trailUserMap.get(trailId);
+        if (!userIds) return;
+
+        userIds.forEach((userId) => {
+          const userData = userTokenMap.get(userId);
+          if (!userData) return;
+
+          messages.push({
+            to: userData.token,
+            sound: "default",
+            title: `${threshold.emoji} ${trail.name}`,
+            body: `Your race ${threshold.message}! Get ready!`,
+            data: { trailId, type: "race_reminder" },
+            channelId: "race_reminders",
+          });
+        });
+      });
+
+      if (messages.length > 0) {
+        await sendExpoPushNotifications(messages);
+        totalSent += messages.length;
+        console.log(`Race reminders (${threshold.days}d): Sent ${messages.length} notifications`);
+      }
+    }
+
+    console.log(`Race reminders done: ${totalSent} total notifications sent`);
+    return null;
+  });
+
+// ─── 2. Weekly Digest: Every Monday at 10:00 AM CT ──────────────────────────
+// Notifies users about new races added near their location in the past week.
+exports.sendWeeklyDigest = functions
+  .runWith({ timeoutSeconds: 300, memory: "256MB" })
+  .pubsub.schedule("0 10 * * 1") // 10:00 AM every Monday
+  .timeZone("America/Chicago")
+  .onRun(async () => {
+    const db = admin.firestore();
+    const oneWeekAgo = new Date();
+    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+    const oneWeekAgoTimestamp = admin.firestore.Timestamp.fromDate(oneWeekAgo);
+
+    // 1. Get all trails added in the last 7 days
+    const newTrailsSnap = await db
+      .collection("trails")
+      .where("createdAt", ">=", oneWeekAgoTimestamp)
+      .get();
+
+    if (newTrailsSnap.empty) {
+      console.log("Weekly digest: No new races this week.");
+      return null;
+    }
+
+    const newTrails = [];
+    newTrailsSnap.forEach((doc) => {
+      const d = doc.data();
+      if (d.isVisibleOnApp === false) return;
+      newTrails.push({
+        id: doc.id,
+        name: d.name,
+        lat: typeof d.latitude === "number" ? d.latitude : null,
+        lon: typeof d.longitude === "number" ? d.longitude : null,
+      });
+    });
+
+    console.log(`Weekly digest: ${newTrails.length} new races this week`);
+
+    // 2. Get all users with push tokens and location
+    const usersSnap = await db.collection("users").get();
+    const messages = [];
+
+    usersSnap.forEach((doc) => {
+      const d = doc.data();
+      const token = d.expoPushToken;
+      if (!token || !Expo.isExpoPushToken(token)) return;
+
+      const userLat = typeof d.latitude === "number" ? d.latitude : null;
+      const userLon = typeof d.longitude === "number" ? d.longitude : null;
+
+      if (userLat === null || userLon === null) {
+        // User has no location — still send a generic digest
+        if (newTrails.length > 0) {
+          messages.push({
+            to: token,
+            sound: "default",
+            title: "🏔️ New Trail Races This Week",
+            body: `${newTrails.length} new trail race${newTrails.length === 1 ? "" : "s"} just added! Swipe to discover.`,
+            data: { type: "weekly_digest" },
+            channelId: "race_reminders",
+          });
+        }
+        return;
+      }
+
+      // Count new races within 150 miles of this user
+      const nearbyRaces = newTrails.filter((trail) => {
+        if (trail.lat === null || trail.lon === null) return false;
+        return haversineDistance(userLat, userLon, trail.lat, trail.lon) <= 150;
+      });
+
+      if (nearbyRaces.length > 0) {
+        // Personalized "near you" digest
+        const locationName = d.locationName || d.location || "";
+        const nearText = locationName ? ` near ${locationName}` : " near you";
+        messages.push({
+          to: token,
+          sound: "default",
+          title: `🔥 ${nearbyRaces.length} New Race${nearbyRaces.length === 1 ? "" : "s"}${nearText}`,
+          body: nearbyRaces.length === 1
+            ? `${nearbyRaces[0].name} was just added! Check it out.`
+            : `Including ${nearbyRaces[0].name} and ${nearbyRaces.length - 1} more. Swipe to explore!`,
+          data: { type: "weekly_digest" },
+          channelId: "race_reminders",
+        });
+      } else if (newTrails.length > 0) {
+        // No nearby races but there are new ones elsewhere
+        messages.push({
+          to: token,
+          sound: "default",
+          title: "🏔️ New Trail Races This Week",
+          body: `${newTrails.length} new race${newTrails.length === 1 ? "" : "s"} added across the US. Swipe to discover!`,
+          data: { type: "weekly_digest" },
+          channelId: "race_reminders",
+        });
+      }
+    });
+
+    if (messages.length > 0) {
+      await sendExpoPushNotifications(messages);
+    }
+
+    console.log(`Weekly digest done: Sent ${messages.length} notifications`);
+    return null;
+  });
+
+// ─── 3. Social Proof: Notify when someone saves a race you also saved ───────
+// When a user saves a race, other users who saved the same race get a notification.
+exports.onNewRaceMatch = functions.firestore
+  .document("matches/{matchId}")
+  .onCreate(async (snap, context) => {
+    const matchData = snap.data();
+    const { trailId, userId: saverId } = matchData;
+
+    if (!trailId || !saverId) return null;
+
+    const db = admin.firestore();
+
+    // Get the race name
+    const trailDoc = await db.collection("trails").doc(trailId).get();
+    if (!trailDoc.exists) return null;
+    const trailName = trailDoc.data().name || "a trail race";
+
+    // Get the saver's name
+    const saverDoc = await db.collection("users").doc(saverId).get();
+    const saverName = saverDoc.exists
+      ? saverDoc.data().username || saverDoc.data().name || "Someone"
+      : "Someone";
+
+    // Find other users who also saved this race
+    const otherMatchesSnap = await db
+      .collection("matches")
+      .where("trailId", "==", trailId)
+      .get();
+
+    const otherUserIds = new Set();
+    otherMatchesSnap.forEach((doc) => {
+      const uid = doc.data().userId;
+      if (uid && uid !== saverId) otherUserIds.add(uid);
+    });
+
+    if (otherUserIds.size === 0) return null;
+
+    // Build and send notifications
+    const messages = [];
+    const BATCH = 30;
+    const otherUserArr = Array.from(otherUserIds);
+
+    for (let i = 0; i < otherUserArr.length; i += BATCH) {
+      const chunk = otherUserArr.slice(i, i + BATCH);
+      const promises = chunk.map((uid) => db.collection("users").doc(uid).get());
+      const docs = await Promise.all(promises);
+
+      docs.forEach((doc) => {
+        if (!doc.exists) return;
+        const d = doc.data();
+        const token = d.expoPushToken;
+        if (!token || !Expo.isExpoPushToken(token)) return;
+
+        const totalGoing = otherUserIds.size + 1; // Include the new saver
+        messages.push({
+          to: token,
+          sound: "default",
+          title: `👥 ${trailName}`,
+          body: totalGoing <= 2
+            ? `${saverName} is also going! Say hi 👋`
+            : `${saverName} and ${totalGoing - 1} others are going! Connect with them.`,
+          data: { trailId, type: "new_race_match" },
+          channelId: "social",
+        });
+      });
+    }
+
+    if (messages.length > 0) {
+      await sendExpoPushNotifications(messages);
+      console.log(`Social proof: Sent ${messages.length} notifications for ${trailName}`);
+    }
+
+    return null;
+  });
+
