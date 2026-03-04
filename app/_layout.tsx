@@ -23,7 +23,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
+import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db } from "@/src/firebaseConfig";
 import {
   registerForPushNotificationsAsync,
@@ -48,13 +48,36 @@ export default function RootLayout() {
   const APP_ID = "1:1048323489461:web:e3c514fcf0d7748ef848fc";
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       const inTabs = segments[0] === "(tabs)";
+      const onOnboarding = segments[0] === "onboarding";
+
       if (!user && inTabs) {
         router.replace("/login");
       } else if (user && segments[0] === "login") {
-        router.replace("/");
+        // Check if user completed onboarding before sending to main app
+        try {
+          const userDoc = await getDoc(doc(db, "users", user.uid));
+          if (userDoc.exists() && userDoc.data()?.onboardingComplete === false) {
+            router.replace("/onboarding");
+          } else {
+            router.replace("/");
+          }
+        } catch {
+          router.replace("/");
+        }
+      } else if (user && inTabs && !onOnboarding) {
+        // Also check on app cold start — redirect to onboarding if not complete
+        try {
+          const userDoc = await getDoc(doc(db, "users", user.uid));
+          if (userDoc.exists() && userDoc.data()?.onboardingComplete === false) {
+            router.replace("/onboarding");
+          }
+        } catch {
+          // Non-critical — allow user through
+        }
       }
+
       setCurrentUserId(user?.uid ?? null);
       setAuthChecked(true);
     });
@@ -218,6 +241,8 @@ export default function RootLayout() {
         <Stack>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="login" options={{ headerShown: false }} />
+          <Stack.Screen name="onboarding" options={{ headerShown: false, gestureEnabled: false }} />
+          <Stack.Screen name="signup" options={{ headerShown: false }} />
           <Stack.Screen name="registration-confirmation" options={{ headerShown: false }} />
           <Stack.Screen
             name="modal"

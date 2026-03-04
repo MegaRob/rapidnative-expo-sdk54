@@ -1,71 +1,126 @@
 import { useRouter } from "expo-router";
 import { updateProfile } from "firebase/auth";
 import { doc, updateDoc } from "firebase/firestore";
-import { ArrowRight, Check } from "lucide-react-native";
-import React, { useRef, useState } from "react";
 import {
-    Alert,
-    Dimensions,
-    FlatList,
+  ArrowRight,
+  Check,
+  Compass,
+  Heart,
+  MapPin,
+  Mountain,
+  Route,
+  Users,
+} from "lucide-react-native";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  Alert,
+  Animated,
+  Dimensions,
+  FlatList,
+  Image,
   KeyboardAvoidingView,
   Platform,
-    Image,
-    ScrollView,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { auth, db } from "../src/firebaseConfig";
 import { getCoordinatesForCity } from "../utils/geolocationUtils";
 import LocationModal from "./components/LocationModal";
-const { width: SCREEN_WIDTH } = Dimensions.get("window");
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
+
+type SlideType = "hero" | "feature" | "form_name" | "form_location" | "form_preferences" | "ready";
 
 type Slide = {
   id: string;
+  type: SlideType;
   title: string;
-  description: string;
+  subtitle: string;
   image?: string;
-  hasForm?: boolean;
-  formType?: "name" | "location";
+  icon?: React.ReactNode;
+  gradientColors?: readonly [string, string, ...string[]];
 };
 
 const slides: Slide[] = [
   {
     id: "welcome",
-    title: "Welcome to TrailMatch!",
-    description: "Discover your next trail and ultramarathon adventure.",
-    image:
-      "https://images.unsplash.com/photo-1635099404457-91c3d0dade3b?w=900&auto=format&fit=crop&q=60",
+    type: "hero",
+    title: "Welcome to\nTrailMatch",
+    subtitle: "Discover trail races you'll love — with a simple swipe.",
+    image: "https://images.unsplash.com/photo-1635099404457-91c3d0dade3b?w=1200&auto=format&fit=crop&q=80",
+    gradientColors: ["transparent", "rgba(0,0,0,0.3)", "rgba(15,23,42,0.95)", "#0F172A"],
   },
   {
     id: "swipe",
-    title: "Find Your Perfect Race",
-    description: "Swipe right to save a race you love. Swipe left to pass.",
-    image:
-      "https://images.unsplash.com/photo-1595078475328-1ab05d0a6a0e?w=900&auto=format&fit=crop&q=60",
+    type: "feature",
+    title: "Swipe to Discover",
+    subtitle: "Swipe right on races you love.\nSwipe left to skip.\nIt's that simple.",
+    icon: <Heart color="#F43F5E" size={48} />,
+    gradientColors: ["#0F172A", "#1E293B", "#0F172A"],
   },
   {
-    id: "calendar",
-    title: "Build Your Race Calendar",
-    description: "All your saved races appear in your dashboard.",
-    image:
-      "https://images.unsplash.com/photo-1657087018695-a57e346504f9?w=900&auto=format&fit=crop&q=60",
+    id: "connect",
+    type: "feature",
+    title: "Find Running Buddies",
+    subtitle: "Chat with runners doing the same race.\nFind pacers, carpool, or just make friends.",
+    icon: <Users color="#10B981" size={48} />,
+    gradientColors: ["#0F172A", "#1E293B", "#0F172A"],
   },
   {
     id: "profile",
-    title: "Your Name",
-    description: "Let other runners know who you are.",
-    hasForm: true,
-    formType: "name",
+    type: "form_name",
+    title: "About You",
+    subtitle: "Let other runners know who you are.",
+    gradientColors: ["#0F172A", "#1E293B", "#0F172A"],
   },
   {
     id: "location",
-    title: "Your Location",
-    description: "Enter your city so we can personalize races nearby.",
-    hasForm: true,
-    formType: "location",
+    type: "form_location",
+    title: "Your Home Base",
+    subtitle: "We'll show you races near your area first.",
+    gradientColors: ["#0F172A", "#1E293B", "#0F172A"],
   },
+  {
+    id: "preferences",
+    type: "form_preferences",
+    title: "Your Preferences",
+    subtitle: "Help us find your perfect races.",
+    gradientColors: ["#0F172A", "#1E293B", "#0F172A"],
+  },
+  {
+    id: "ready",
+    type: "ready",
+    title: "You're All Set!",
+    subtitle: "Start swiping to find your next race adventure.",
+    image: "https://images.unsplash.com/photo-1657087018695-a57e346504f9?w=1200&auto=format&fit=crop&q=80",
+    gradientColors: ["transparent", "rgba(0,0,0,0.3)", "rgba(15,23,42,0.95)", "#0F172A"],
+  },
+];
+
+// Options for preferences
+const DISTANCE_OPTIONS = [
+  { value: "5K-25K", label: "5K – 25K", desc: "Short" },
+  { value: "50K", label: "50K", desc: "Ultra" },
+  { value: "100K", label: "100K", desc: "Long Ultra" },
+  { value: "100M+", label: "100M+", desc: "Mega" },
+];
+
+const DIFFICULTY_OPTIONS = [
+  { value: "Easy/Fire Road", label: "Easy", desc: "Fire roads & flat" },
+  { value: "Moderate/Mountain", label: "Moderate", desc: "Mountain trails" },
+  { value: "Technical/Skyrunning", label: "Technical", desc: "Skyrunning & technical" },
+];
+
+const RADIUS_OPTIONS = [
+  { value: 50, label: "50 mi", desc: "Local" },
+  { value: 100, label: "100 mi", desc: "Regional" },
+  { value: 250, label: "250 mi", desc: "Extended" },
+  { value: 0, label: "Global", desc: "Everywhere" },
 ];
 
 export default function OnboardingScreen() {
@@ -78,9 +133,34 @@ export default function OnboardingScreen() {
   const [locationLon, setLocationLon] = useState<number | null>(null);
   const [showLocationModal, setShowLocationModal] = useState(false);
   const [bio, setBio] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Preferences
+  const [prefDistance, setPrefDistance] = useState<string | null>(null);
+  const [prefDifficulty, setPrefDifficulty] = useState<string | null>(null);
+  const [prefRadius, setPrefRadius] = useState<number>(0);
+
   const flatListRef = useRef<FlatList<Slide>>(null);
+  const progressAnim = useRef(new Animated.Value(0)).current;
+
+  // Animate progress bar
+  useEffect(() => {
+    Animated.spring(progressAnim, {
+      toValue: (currentIndex + 1) / slides.length,
+      tension: 40,
+      friction: 10,
+      useNativeDriver: false,
+    }).start();
+  }, [currentIndex]);
+
+  // Find the first form slide index (for Skip button logic)
+  const firstFormIndex = slides.findIndex(
+    (s) => s.type === "form_name" || s.type === "form_location" || s.type === "form_preferences"
+  );
 
   const handleOnboardingComplete = async () => {
+    if (isSaving) return;
+    setIsSaving(true);
     try {
       const user = auth.currentUser;
       if (!user) throw new Error("No user found");
@@ -89,15 +169,15 @@ export default function OnboardingScreen() {
         locationLat !== null && locationLon !== null
           ? { lat: locationLat, lon: locationLon }
           : locationName.trim()
-            ? getCoordinatesForCity(locationName.trim())
-            : null;
+          ? getCoordinatesForCity(locationName.trim())
+          : null;
 
       // 1. Update the Firebase Auth profile
       await updateProfile(user, {
-        displayName: fullName || user.displayName || "", // 'name' from component state
+        displayName: fullName || user.displayName || "",
       });
 
-      // 2. Update the Firestore document
+      // 2. Update the Firestore document with profile + preferences
       const userDocRef = doc(db, "users", user.uid);
       await updateDoc(userDocRef, {
         firstName: firstName.trim(),
@@ -105,7 +185,10 @@ export default function OnboardingScreen() {
         name: fullName,
         locationName: locationName.trim(),
         ...(coords ? { latitude: coords.lat, longitude: coords.lon } : {}),
-        bio: bio, // 'bio' from component state
+        bio: bio.trim(),
+        preferredDistance: prefDistance,
+        preferredDifficulty: prefDifficulty,
+        preferredRadius: prefRadius,
         onboardingComplete: true,
       });
 
@@ -113,26 +196,28 @@ export default function OnboardingScreen() {
     } catch (error) {
       console.error("Failed to complete onboarding:", error);
       Alert.alert("Error", "Could not complete onboarding. Please try again.");
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  // Index of the "Your Name" slide — users must fill this out
-  const nameSlideIndex = slides.findIndex((s) => s.formType === "name");
-
   const handleSkip = () => {
-    // Skip intro slides and go straight to the required name form
-    flatListRef.current?.scrollToIndex({ animated: true, index: nameSlideIndex });
+    flatListRef.current?.scrollToIndex({ animated: true, index: firstFormIndex });
   };
 
   const handleNext = () => {
     const currentSlide = slides[currentIndex];
-    if (currentSlide?.formType === "name") {
+
+    // Validate name form
+    if (currentSlide?.type === "form_name") {
       if (!firstName.trim() || !lastName.trim()) {
         Alert.alert("Missing details", "Please enter your first and last name.");
         return;
       }
     }
-    if (currentSlide?.formType === "location") {
+
+    // Validate location form
+    if (currentSlide?.type === "form_location") {
       if (!locationName.trim()) {
         Alert.alert("Missing details", "Please enter your city and state.");
         return;
@@ -150,6 +235,7 @@ export default function OnboardingScreen() {
         setLocationLon(coords.lon);
       }
     }
+
     if (currentIndex < slides.length - 1) {
       flatListRef.current?.scrollToIndex({
         index: currentIndex + 1,
@@ -166,111 +252,444 @@ export default function OnboardingScreen() {
     }
   });
 
-  const renderSlide = ({ item }: { item: Slide }) => (
-    <ScrollView
-      contentContainerStyle={{ flexGrow: 1, alignItems: 'center', justifyContent: item.hasForm ? 'flex-start' : 'center', padding: 32, paddingBottom: 100 }}
-      style={{ width: SCREEN_WIDTH }}
-      keyboardShouldPersistTaps="handled"
-      showsVerticalScrollIndicator={false}
-    >
-      {item.image && (
-        <View className="w-48 h-48 rounded-full overflow-hidden mb-8 bg-gray-800">
-          <Image source={{ uri: item.image }} className="w-full h-full" />
-        </View>
-      )}
-
-      <Text className="text-3xl font-bold text-white mb-4 text-center">
-        {item.title}
-      </Text>
-      <Text className="text-lg text-gray-300 text-center px-4">
-        {item.description}
-      </Text>
-
-      {item.hasForm && item.formType === "name" && (
-        <View className="w-full mt-10 space-y-4">
-          <View>
-            <Text className="text-gray-300 mb-2">First Name</Text>
-            <TextInput
-              className="bg-gray-800 rounded-xl p-4 text-white"
-              placeholder="Enter your first name"
-              placeholderTextColor="#9CA3AF"
-              value={firstName}
-              onChangeText={setFirstName}
-            />
-          </View>
-
-          <View>
-            <Text className="text-gray-300 mb-2">Last Name</Text>
-            <TextInput
-              className="bg-gray-800 rounded-xl p-4 text-white"
-              placeholder="Enter your last name"
-              placeholderTextColor="#9CA3AF"
-              value={lastName}
-              onChangeText={setLastName}
-            />
-          </View>
-
-          <View>
-            <Text className="text-gray-300 mb-2">Bio</Text>
-            <TextInput
-              className="bg-gray-800 rounded-xl p-4 text-white h-24"
-              placeholder="Tell us about yourself"
-              placeholderTextColor="#9CA3AF"
-              value={bio}
-              onChangeText={setBio}
-              multiline
-              textAlignVertical="top"
-            />
-          </View>
-
-        </View>
-      )}
-
-      {item.hasForm && item.formType === "location" && (
-        <View className="w-full mt-10 space-y-4">
-          <View>
-            <Text className="text-gray-300 mb-2">Location</Text>
-            <TextInput
-              className="bg-gray-800 rounded-xl p-4 text-white"
-              placeholder="e.g., Logan, UT"
-              placeholderTextColor="#9CA3AF"
-              value={locationName}
-              onChangeText={setLocationName}
-              autoCapitalize="words"
-            />
-            <Text className="text-gray-500 text-xs mt-2">
-              We use this to personalize races near you.
-            </Text>
-          </View>
-          <TouchableOpacity
-            className="bg-gray-800 rounded-xl p-4 items-center"
-            onPress={() => setShowLocationModal(true)}
+  // --- Chip selector component ---
+  const ChipSelector = ({
+    options,
+    selected,
+    onSelect,
+  }: {
+    options: { value: any; label: string; desc: string }[];
+    selected: any;
+    onSelect: (val: any) => void;
+  }) => (
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, justifyContent: "center" }}>
+      {options.map((opt) => {
+        const isSelected = selected === opt.value;
+        return (
+          <Pressable
+            key={String(opt.value)}
+            onPress={() => onSelect(isSelected ? null : opt.value)}
+            style={{
+              paddingHorizontal: 20,
+              paddingVertical: 14,
+              borderRadius: 16,
+              backgroundColor: isSelected ? "rgba(16, 185, 129, 0.2)" : "rgba(30, 41, 59, 0.6)",
+              borderWidth: 1.5,
+              borderColor: isSelected ? "#10B981" : "rgba(71, 85, 105, 0.4)",
+              minWidth: 90,
+              alignItems: "center",
+            }}
           >
-            <Text className="text-white font-semibold">Use GPS or Search</Text>
-          </TouchableOpacity>
-          {locationLat !== null && locationLon !== null && (
-            <Text className="text-green-400 text-xs">
-              Location set successfully.
+            <Text
+              style={{
+                color: isSelected ? "#10B981" : "#E2E8F0",
+                fontWeight: "700",
+                fontSize: 15,
+              }}
+            >
+              {opt.label}
             </Text>
-          )}
-        </View>
-      )}
-    </ScrollView>
+            <Text
+              style={{
+                color: isSelected ? "rgba(16, 185, 129, 0.7)" : "#64748B",
+                fontSize: 12,
+                marginTop: 2,
+              }}
+            >
+              {opt.desc}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
   );
 
-  return (
-    <View className="flex-1 bg-gray-900">
-      {currentIndex < nameSlideIndex && (
-        <TouchableOpacity
-          className="absolute top-12 right-6 z-10"
-          onPress={handleSkip}
-        >
-          <Text className="text-green-400 font-semibold">Skip</Text>
-        </TouchableOpacity>
-      )}
+  // --- Render individual slides ---
+  const renderSlide = ({ item }: { item: Slide }) => {
+    // HERO slide — full-screen image with overlay text
+    if (item.type === "hero" || item.type === "ready") {
+      return (
+        <View style={{ width: SCREEN_WIDTH, height: SCREEN_HEIGHT }}>
+          {item.image && (
+            <Image
+              source={{ uri: item.image }}
+              style={{
+                position: "absolute",
+                width: SCREEN_WIDTH,
+                height: SCREEN_HEIGHT,
+              }}
+              resizeMode="cover"
+            />
+          )}
+          <LinearGradient
+            colors={item.gradientColors || ["transparent", "#0F172A"]}
+            style={{ position: "absolute", width: "100%", height: "100%" }}
+            locations={[0, 0.3, 0.65, 1]}
+          />
+          <View
+            style={{
+              flex: 1,
+              justifyContent: "flex-end",
+              paddingHorizontal: 32,
+              paddingBottom: 160,
+            }}
+          >
+            {item.type === "ready" && (
+              <View
+                style={{
+                  width: 72,
+                  height: 72,
+                  borderRadius: 36,
+                  backgroundColor: "rgba(16, 185, 129, 0.2)",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  marginBottom: 20,
+                  borderWidth: 1,
+                  borderColor: "rgba(16, 185, 129, 0.3)",
+                }}
+              >
+                <Check color="#10B981" size={36} />
+              </View>
+            )}
+            <Text
+              style={{
+                fontSize: item.type === "hero" ? 42 : 36,
+                fontWeight: "800",
+                color: "#FFFFFF",
+                marginBottom: 12,
+                lineHeight: item.type === "hero" ? 50 : 44,
+                letterSpacing: -0.5,
+              }}
+            >
+              {item.title}
+            </Text>
+            <Text
+              style={{
+                fontSize: 17,
+                color: "rgba(255,255,255,0.8)",
+                lineHeight: 26,
+              }}
+            >
+              {item.subtitle}
+            </Text>
+          </View>
+        </View>
+      );
+    }
 
+    // FEATURE slides — icon + text centered
+    if (item.type === "feature") {
+      return (
+        <View style={{ width: SCREEN_WIDTH }}>
+          <LinearGradient
+            colors={item.gradientColors || ["#0F172A", "#1E293B", "#0F172A"]}
+            style={{ position: "absolute", width: "100%", height: "100%" }}
+          />
+          <View
+            style={{
+              flex: 1,
+              alignItems: "center",
+              justifyContent: "center",
+              paddingHorizontal: 40,
+              paddingBottom: 80,
+            }}
+          >
+            <View
+              style={{
+                width: 100,
+                height: 100,
+                borderRadius: 32,
+                backgroundColor: "rgba(255,255,255,0.05)",
+                alignItems: "center",
+                justifyContent: "center",
+                marginBottom: 32,
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.1)",
+              }}
+            >
+              {item.icon}
+            </View>
+            <Text
+              style={{
+                fontSize: 32,
+                fontWeight: "800",
+                color: "#FFFFFF",
+                textAlign: "center",
+                marginBottom: 16,
+                letterSpacing: -0.3,
+              }}
+            >
+              {item.title}
+            </Text>
+            <Text
+              style={{
+                fontSize: 17,
+                color: "#94A3B8",
+                textAlign: "center",
+                lineHeight: 26,
+              }}
+            >
+              {item.subtitle}
+            </Text>
+          </View>
+        </View>
+      );
+    }
+
+    // FORM slides — name, location, preferences
+    return (
+      <View style={{ width: SCREEN_WIDTH }}>
+        <LinearGradient
+          colors={item.gradientColors || ["#0F172A", "#1E293B", "#0F172A"]}
+          style={{ position: "absolute", width: "100%", height: "100%" }}
+        />
+        <ScrollView
+          contentContainerStyle={{
+            flexGrow: 1,
+            paddingHorizontal: 28,
+            paddingTop: 80,
+            paddingBottom: 160,
+          }}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Section header */}
+          <View style={{ marginBottom: 32 }}>
+            <Text
+              style={{
+                fontSize: 30,
+                fontWeight: "800",
+                color: "#FFFFFF",
+                marginBottom: 8,
+                letterSpacing: -0.3,
+              }}
+            >
+              {item.title}
+            </Text>
+            <Text style={{ fontSize: 16, color: "#94A3B8", lineHeight: 24 }}>
+              {item.subtitle}
+            </Text>
+          </View>
+
+          {/* NAME FORM */}
+          {item.type === "form_name" && (
+            <View style={{ gap: 20 }}>
+              <View>
+                <Text style={{ color: "#CBD5E1", marginBottom: 8, fontSize: 14, fontWeight: "600" }}>
+                  First Name
+                </Text>
+                <TextInput
+                  style={{
+                    backgroundColor: "rgba(15, 23, 42, 0.6)",
+                    borderRadius: 14,
+                    padding: 16,
+                    color: "#FFFFFF",
+                    fontSize: 16,
+                    borderWidth: 1,
+                    borderColor: "rgba(71, 85, 105, 0.5)",
+                  }}
+                  placeholder="Enter your first name"
+                  placeholderTextColor="#64748B"
+                  value={firstName}
+                  onChangeText={setFirstName}
+                  autoCapitalize="words"
+                />
+              </View>
+
+              <View>
+                <Text style={{ color: "#CBD5E1", marginBottom: 8, fontSize: 14, fontWeight: "600" }}>
+                  Last Name
+                </Text>
+                <TextInput
+                  style={{
+                    backgroundColor: "rgba(15, 23, 42, 0.6)",
+                    borderRadius: 14,
+                    padding: 16,
+                    color: "#FFFFFF",
+                    fontSize: 16,
+                    borderWidth: 1,
+                    borderColor: "rgba(71, 85, 105, 0.5)",
+                  }}
+                  placeholder="Enter your last name"
+                  placeholderTextColor="#64748B"
+                  value={lastName}
+                  onChangeText={setLastName}
+                  autoCapitalize="words"
+                />
+              </View>
+
+              <View>
+                <Text style={{ color: "#CBD5E1", marginBottom: 8, fontSize: 14, fontWeight: "600" }}>
+                  Bio{" "}
+                  <Text style={{ color: "#64748B", fontWeight: "400" }}>(optional)</Text>
+                </Text>
+                <TextInput
+                  style={{
+                    backgroundColor: "rgba(15, 23, 42, 0.6)",
+                    borderRadius: 14,
+                    padding: 16,
+                    color: "#FFFFFF",
+                    fontSize: 16,
+                    height: 100,
+                    borderWidth: 1,
+                    borderColor: "rgba(71, 85, 105, 0.5)",
+                    textAlignVertical: "top",
+                  }}
+                  placeholder="Tell us about yourself — pace, goals, favorite trails..."
+                  placeholderTextColor="#64748B"
+                  value={bio}
+                  onChangeText={setBio}
+                  multiline
+                />
+              </View>
+            </View>
+          )}
+
+          {/* LOCATION FORM */}
+          {item.type === "form_location" && (
+            <View style={{ gap: 16 }}>
+              <View>
+                <Text style={{ color: "#CBD5E1", marginBottom: 8, fontSize: 14, fontWeight: "600" }}>
+                  City & State
+                </Text>
+                <TextInput
+                  style={{
+                    backgroundColor: "rgba(15, 23, 42, 0.6)",
+                    borderRadius: 14,
+                    padding: 16,
+                    color: "#FFFFFF",
+                    fontSize: 16,
+                    borderWidth: 1,
+                    borderColor: "rgba(71, 85, 105, 0.5)",
+                  }}
+                  placeholder="e.g., Logan, UT"
+                  placeholderTextColor="#64748B"
+                  value={locationName}
+                  onChangeText={setLocationName}
+                  autoCapitalize="words"
+                />
+              </View>
+
+              <TouchableOpacity
+                style={{
+                  backgroundColor: "rgba(16, 185, 129, 0.1)",
+                  borderRadius: 14,
+                  padding: 16,
+                  alignItems: "center",
+                  flexDirection: "row",
+                  justifyContent: "center",
+                  gap: 8,
+                  borderWidth: 1,
+                  borderColor: "rgba(16, 185, 129, 0.3)",
+                }}
+                onPress={() => setShowLocationModal(true)}
+              >
+                <MapPin color="#10B981" size={18} />
+                <Text style={{ color: "#10B981", fontWeight: "700", fontSize: 15 }}>
+                  Use GPS or Search
+                </Text>
+              </TouchableOpacity>
+
+              {locationLat !== null && locationLon !== null && (
+                <View
+                  style={{
+                    backgroundColor: "rgba(16, 185, 129, 0.1)",
+                    borderRadius: 12,
+                    padding: 12,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <Check color="#10B981" size={16} />
+                  <Text style={{ color: "#10B981", fontSize: 14, fontWeight: "600" }}>
+                    Location set — {locationName || "GPS coordinates saved"}
+                  </Text>
+                </View>
+              )}
+
+              <Text style={{ color: "#64748B", fontSize: 13, marginTop: 4, lineHeight: 20 }}>
+                We use this to show you races nearby. You can always change your search radius later.
+              </Text>
+            </View>
+          )}
+
+          {/* PREFERENCES FORM */}
+          {item.type === "form_preferences" && (
+            <View style={{ gap: 28 }}>
+              {/* Distance preference */}
+              <View>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                  <Route color="#10B981" size={18} />
+                  <Text style={{ color: "#E2E8F0", fontSize: 16, fontWeight: "700" }}>
+                    Preferred Distance
+                  </Text>
+                </View>
+                <ChipSelector
+                  options={DISTANCE_OPTIONS}
+                  selected={prefDistance}
+                  onSelect={setPrefDistance}
+                />
+              </View>
+
+              {/* Difficulty preference */}
+              <View>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                  <Mountain color="#10B981" size={18} />
+                  <Text style={{ color: "#E2E8F0", fontSize: 16, fontWeight: "700" }}>
+                    Difficulty Level
+                  </Text>
+                </View>
+                <ChipSelector
+                  options={DIFFICULTY_OPTIONS}
+                  selected={prefDifficulty}
+                  onSelect={setPrefDifficulty}
+                />
+              </View>
+
+              {/* Search radius preference */}
+              <View>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                  <Compass color="#10B981" size={18} />
+                  <Text style={{ color: "#E2E8F0", fontSize: 16, fontWeight: "700" }}>
+                    Search Radius
+                  </Text>
+                </View>
+                <ChipSelector
+                  options={RADIUS_OPTIONS}
+                  selected={prefRadius}
+                  onSelect={(val) => setPrefRadius(val ?? 0)}
+                />
+              </View>
+
+              <Text style={{ color: "#64748B", fontSize: 13, textAlign: "center", lineHeight: 20 }}>
+                These are optional — you can always adjust filters in the app.
+              </Text>
+            </View>
+          )}
+        </ScrollView>
+      </View>
+    );
+  };
+
+  const currentSlide = slides[currentIndex];
+  const isLastSlide = currentIndex === slides.length - 1;
+  const isIntroSlide = currentSlide?.type === "hero" || currentSlide?.type === "feature";
+  const showSkip = currentIndex < firstFormIndex;
+
+  // CTA button text
+  const getButtonText = () => {
+    if (isLastSlide) return isSaving ? "Setting up..." : "Let's Go!";
+    if (currentSlide?.type === "form_preferences") return "Almost done →";
+    if (currentSlide?.type === "form_name") return "Next";
+    if (currentSlide?.type === "form_location") return "Next";
+    return "";
+  };
+
+  return (
+    <View style={{ flex: 1, backgroundColor: "#0F172A" }}>
       <KeyboardAvoidingView
-        className="flex-1"
+        style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={Platform.OS === "ios" ? 20 : 0}
       >
@@ -284,32 +703,115 @@ export default function OnboardingScreen() {
           showsHorizontalScrollIndicator={false}
           onViewableItemsChanged={onViewableItemsChanged.current}
           keyboardShouldPersistTaps="handled"
+          scrollEnabled={false}
         />
       </KeyboardAvoidingView>
 
-      <View className="absolute bottom-8 left-0 right-0">
-        <View className="flex-row justify-center items-center mb-6">
-          {slides.map((slide, index) => (
-            <View
-              key={slide.id}
-              className={`w-3 h-3 rounded-full mx-1 ${
-                index === currentIndex ? "bg-green-400" : "bg-gray-700"
-              }`}
-            />
-          ))}
+      {/* Bottom controls overlay */}
+      <View
+        style={{
+          position: "absolute",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          paddingBottom: Platform.OS === "ios" ? 50 : 32,
+          paddingHorizontal: 24,
+        }}
+      >
+        {/* Progress bar */}
+        <View
+          style={{
+            height: 4,
+            backgroundColor: "rgba(255,255,255,0.1)",
+            borderRadius: 2,
+            marginBottom: 24,
+            overflow: "hidden",
+          }}
+        >
+          <Animated.View
+            style={{
+              height: "100%",
+              backgroundColor: "#10B981",
+              borderRadius: 2,
+              width: progressAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: ["0%", "100%"],
+              }),
+            }}
+          />
         </View>
 
-        <View className="flex-row justify-center">
-          <TouchableOpacity
-            className="bg-green-500 rounded-full w-14 h-14 items-center justify-center"
-            onPress={handleNext}
-          >
-            {currentIndex < slides.length - 1 ? (
-              <ArrowRight color="white" size={24} />
-            ) : (
-              <Check color="white" size={24} />
-            )}
-          </TouchableOpacity>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+          {/* Skip button (only on intro slides) */}
+          {showSkip ? (
+            <TouchableOpacity onPress={handleSkip} style={{ padding: 8 }}>
+              <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 16, fontWeight: "600" }}>
+                Skip
+              </Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={{ width: 50 }} />
+          )}
+
+          {/* Main CTA */}
+          {isIntroSlide && !isLastSlide ? (
+            // Circle arrow for intro slides
+            <TouchableOpacity
+              onPress={handleNext}
+              style={{
+                width: 64,
+                height: 64,
+                borderRadius: 32,
+                backgroundColor: "#10B981",
+                alignItems: "center",
+                justifyContent: "center",
+                shadowColor: "#10B981",
+                shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: 0.4,
+                shadowRadius: 12,
+                elevation: 6,
+              }}
+              activeOpacity={0.8}
+            >
+              <ArrowRight color="white" size={26} />
+            </TouchableOpacity>
+          ) : (
+            // Full-width button for form & ready slides
+            <TouchableOpacity
+              onPress={handleNext}
+              disabled={isSaving}
+              style={{
+                flex: 1,
+                marginLeft: showSkip ? 16 : 0,
+                backgroundColor: "#10B981",
+                borderRadius: 16,
+                paddingVertical: 18,
+                alignItems: "center",
+                shadowColor: "#10B981",
+                shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: 0.4,
+                shadowRadius: 12,
+                elevation: 6,
+              }}
+              activeOpacity={0.8}
+            >
+              {isLastSlide && !isSaving ? (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Text style={{ color: "#FFFFFF", fontSize: 18, fontWeight: "800" }}>
+                    {getButtonText()}
+                  </Text>
+                  <Compass color="#FFFFFF" size={20} />
+                </View>
+              ) : (
+                <Text style={{ color: "#FFFFFF", fontSize: 17, fontWeight: "700" }}>
+                  {getButtonText()}
+                </Text>
+              )}
+            </TouchableOpacity>
+          )}
+
+          {/* Spacer for symmetry on intro slides */}
+          {isIntroSlide && !isLastSlide && <View style={{ width: 50 }} />}
         </View>
       </View>
 

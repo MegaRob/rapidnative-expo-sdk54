@@ -405,11 +405,27 @@ export default function HomeScreen() {
             );
           }
 
-          // Load saved radius preference
-          const savedRadius = typeof userData?.searchRadius === 'number' ? userData.searchRadius : 0;
-          if (savedRadius === 25 || savedRadius === 50 || savedRadius === 100 || savedRadius === 250 || savedRadius === 500) {
-            setFilters(prev => ({ ...prev, radius: savedRadius as RaceFilters['radius'] }));
-          }
+          // Load saved preferences as default filters (from onboarding or saved settings)
+          const savedRadius = typeof userData?.searchRadius === 'number'
+            ? userData.searchRadius
+            : typeof userData?.preferredRadius === 'number'
+            ? userData.preferredRadius
+            : 0;
+          const savedDistance = userData?.preferredDistance || null;
+          const savedDifficulty = userData?.preferredDifficulty || null;
+
+          setFilters(prev => ({
+            ...prev,
+            ...(savedRadius === 25 || savedRadius === 50 || savedRadius === 100 || savedRadius === 250 || savedRadius === 500
+              ? { radius: savedRadius as RaceFilters['radius'] }
+              : {}),
+            ...(savedDistance && ['5K-25K', '50K', '100K', '100M+'].includes(savedDistance)
+              ? { distance: savedDistance as RaceFilters['distance'] }
+              : {}),
+            ...(savedDifficulty && ['Technical/Skyrunning', 'Moderate/Mountain', 'Easy/Fire Road'].includes(savedDifficulty)
+              ? { difficulty: savedDifficulty as RaceFilters['difficulty'] }
+              : {}),
+          }));
 
           // If GPS hasn't set coordinates yet, fall back to profile location
           if (effectLat === null || effectLon === null) {
