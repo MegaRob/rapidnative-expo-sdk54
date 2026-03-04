@@ -281,6 +281,19 @@ service cloud.firestore {
     }
     // --- END COMPLETED RACES COLLECTION ---
 
+    // --- REVIEWS COLLECTION ---
+    match /reviews/{reviewId} {
+      // Anyone authenticated can read reviews (shown on race cards & details)
+      allow read: if request.auth != null;
+      // Users can create their own reviews
+      allow create: if request.auth != null &&
+        request.auth.uid == request.resource.data.userId;
+      // Users can update/delete their own reviews
+      allow update, delete: if request.auth != null &&
+        request.auth.uid == resource.data.userId;
+    }
+    // --- END REVIEWS COLLECTION ---
+
     // --- PAYMENTS COLLECTION ---
     match /payments/{paymentId} {
       // Only Cloud Functions (admin SDK) create payments

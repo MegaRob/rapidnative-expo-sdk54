@@ -14,7 +14,9 @@ import {
   MessageCircle,
   Mountain,
   Route,
+  Search,
   Send,
+  Star,
   User,
   X
 } from "lucide-react-native";
@@ -61,6 +63,8 @@ interface Trail {
   latitude?: number; // Race latitude
   longitude?: number; // Race longitude
   distance?: number; // Distance from user in miles (calculated)
+  avgRating?: number; // Average star rating (1-5)
+  reviewCount?: number; // Number of reviews
   dateRaw?: Date; // Raw date for filtering
   position: Animated.ValueXY;
 }
@@ -349,6 +353,8 @@ export default function HomeScreen() {
       sponsorText,
       latitude,
       longitude,
+      avgRating: typeof data?.avgRating === 'number' ? data.avgRating : undefined,
+      reviewCount: typeof data?.reviewCount === 'number' ? data.reviewCount : undefined,
       position: new Animated.ValueXY(),
     };
     return trail;
@@ -1037,6 +1043,10 @@ export default function HomeScreen() {
     router.push("/profile");
   }, [router]);
 
+  const handleNavigateToSearch = useCallback(() => {
+    router.push("/search");
+  }, [router]);
+
   // --- RENDER LOGIC ---
 
   if (error) {
@@ -1132,6 +1142,7 @@ export default function HomeScreen() {
         onSaved={handleNavigateToSaved}
         onChat={handleNavigateToChat}
         onProfile={handleNavigateToProfile}
+        onSearch={handleNavigateToSearch}
         hasUnreadMessages={hasUnreadMessages}
         onResetFilters={handleResetFilters}
         hasActiveFilters={hasActiveFilters}
@@ -1154,6 +1165,7 @@ export default function HomeScreen() {
         onSaved={handleNavigateToSaved}
         onChat={handleNavigateToChat}
         onProfile={handleNavigateToProfile}
+        onSearch={handleNavigateToSearch}
         hasUnreadMessages={hasUnreadMessages}
         onResetFilters={handleResetFilters}
         hasActiveFilters={hasActiveFilters}
@@ -1175,6 +1187,7 @@ export default function HomeScreen() {
         onSaved={handleNavigateToSaved}
         onChat={handleNavigateToChat}
         onProfile={handleNavigateToProfile}
+        onSearch={handleNavigateToSearch}
         hasUnreadMessages={hasUnreadMessages}
         onFilter={() => setShowFilterModal(true)}
         hasActiveFilters={hasActiveFilters}
@@ -1281,6 +1294,47 @@ export default function HomeScreen() {
               >
                 {currentRace.name || 'Race details loading...'}
               </Text>
+
+              {/* Star Rating */}
+              {currentRace.avgRating && currentRace.avgRating > 0 && (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 4 }}>
+                  {[1, 2, 3, 4, 5].map((s) => (
+                    <Star
+                      key={s}
+                      size={14}
+                      color={s <= Math.round(currentRace.avgRating!) ? '#FBBF24' : 'rgba(255,255,255,0.3)'}
+                      fill={s <= Math.round(currentRace.avgRating!) ? '#FBBF24' : 'transparent'}
+                    />
+                  ))}
+                  <Text
+                    style={{
+                      color: '#FBBF24',
+                      fontSize: 13,
+                      fontWeight: '700',
+                      marginLeft: 4,
+                      textShadowColor: 'rgba(0,0,0,0.8)',
+                      textShadowOffset: { width: 0, height: 1 },
+                      textShadowRadius: 5,
+                    }}
+                  >
+                    {currentRace.avgRating.toFixed(1)}
+                  </Text>
+                  {currentRace.reviewCount ? (
+                    <Text
+                      style={{
+                        color: 'rgba(255,255,255,0.6)',
+                        fontSize: 12,
+                        marginLeft: 2,
+                        textShadowColor: 'rgba(0,0,0,0.8)',
+                        textShadowOffset: { width: 0, height: 1 },
+                        textShadowRadius: 5,
+                      }}
+                    >
+                      ({currentRace.reviewCount})
+                    </Text>
+                  ) : null}
+                </View>
+              )}
 
               {/* Slogan */}
               {currentRace.slogan && currentRace.slogan !== 'Discover new trails' && (
@@ -1485,6 +1539,7 @@ const EmptyScreen = ({
   onSaved,
   onChat,
   onProfile,
+  onSearch,
   hasUnreadMessages = false,
   onResetFilters,
   hasActiveFilters = false,
@@ -1501,6 +1556,7 @@ const EmptyScreen = ({
   onSaved: () => void;
   onChat: () => void;
   onProfile: () => void;
+  onSearch?: () => void;
   hasUnreadMessages?: boolean;
   onResetFilters?: () => void;
   hasActiveFilters?: boolean;
@@ -1519,6 +1575,7 @@ const EmptyScreen = ({
         onSaved={onSaved} 
         onChat={onChat} 
         onProfile={onProfile} 
+        onSearch={onSearch}
         hasUnreadMessages={hasUnreadMessages}
         onFilter={onFilter}
         hasActiveFilters={hasActiveFilters}
@@ -1587,6 +1644,7 @@ const MainHeader = ({
   onSaved,
   onChat,
   onProfile,
+  onSearch,
   hasUnreadMessages = false,
   onFilter,
   hasActiveFilters = false,
@@ -1594,6 +1652,7 @@ const MainHeader = ({
   onSaved: () => void;
   onChat: () => void;
   onProfile: () => void;
+  onSearch?: () => void;
   hasUnreadMessages?: boolean;
   onFilter?: () => void;
   hasActiveFilters?: boolean;
@@ -1611,6 +1670,11 @@ const MainHeader = ({
           {hasActiveFilters && (
             <View className="absolute top-1 right-1 w-3 h-3 bg-emerald-500 rounded-full border-2 border-[#1A1F25]" />
           )}
+        </TouchableOpacity>
+      )}
+      {onSearch && (
+        <TouchableOpacity onPress={onSearch} className="p-2 ml-2">
+          <Search size={24} color="#8BC34A" />
         </TouchableOpacity>
       )}
     </View>

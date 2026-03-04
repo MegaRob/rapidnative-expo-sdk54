@@ -244,6 +244,7 @@ export default function RootLayout() {
           <Stack.Screen name="onboarding" options={{ headerShown: false, gestureEnabled: false }} />
           <Stack.Screen name="signup" options={{ headerShown: false }} />
           <Stack.Screen name="registration-confirmation" options={{ headerShown: false }} />
+          <Stack.Screen name="search" options={{ headerShown: false, animation: 'fade' }} />
           <Stack.Screen
             name="modal"
             options={{ presentation: "modal", title: "Modal" }}

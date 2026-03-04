@@ -1,7 +1,7 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { arrayUnion, collection, doc, getDoc, getDocs, onSnapshot, query, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
-import { ArrowLeft, Calendar, Clock, Heart, Mountain, Share2 } from 'lucide-react-native';
+import { ArrowLeft, Calendar, Clock, Heart, Mountain, Share2, Star } from 'lucide-react-native';
 import { cssInterop } from 'nativewind';
 import React, { useEffect, useState } from 'react';
 import { Alert, Dimensions, Image, Linking, Pressable, ScrollView, Share, Text, TouchableOpacity, View } from 'react-native';
@@ -11,6 +11,8 @@ import { auth, db } from '../src/firebaseConfig';
 import ConfettiEffect from './components/ConfettiEffect';
 import FinisherCard from './components/FinisherCard';
 import RegistrationForm from './components/RegistrationForm';
+import ReviewForm from './components/ReviewForm';
+import StarRating from './components/StarRating';
 import UserProfileModal from './components/UserProfileModal';
 
 // Enable className support for LinearGradient
@@ -45,6 +47,10 @@ export default function RaceDetailsScreen() {
   const [showConfetti, setShowConfetti] = useState(false);
   const [showRegistrationModal, setShowRegistrationModal] = useState(false);
   const [selectedDistance, setSelectedDistance] = useState<string | undefined>(undefined);
+  const [showReviewForm, setShowReviewForm] = useState(false);
+  const [reviews, setReviews] = useState<any[]>([]);
+  const [avgRating, setAvgRating] = useState(0);
+  const [reviewCount, setReviewCount] = useState(0);
   const { allBlockedIds } = useBlockedUsers();
 
   // Hide default header
@@ -85,6 +91,51 @@ export default function RaceDetailsScreen() {
     };
 
     checkIfCompleted();
+  }, [raceId]);
+
+  // Fetch reviews for this race
+  const fetchReviews = async () => {
+    if (!raceId) return;
+    try {
+      const reviewsQuery = query(
+        collection(db, 'reviews'),
+        where('trailId', '==', raceId)
+      );
+      const snap = await getDocs(reviewsQuery);
+      const reviewsList: any[] = [];
+      let total = 0;
+      for (const reviewDoc of snap.docs) {
+        const data = reviewDoc.data();
+        total += data.rating || 0;
+        // Fetch reviewer name
+        let reviewerName = 'Runner';
+        try {
+          const userDoc = await getDoc(doc(db, 'users', data.userId));
+          if (userDoc.exists()) {
+            const ud = userDoc.data();
+            reviewerName = ud.firstName || ud.name?.split(' ')[0] || 'Runner';
+          }
+        } catch {}
+        reviewsList.push({ id: reviewDoc.id, ...data, reviewerName });
+      }
+      // Sort newest first
+      reviewsList.sort((a, b) => {
+        const aTime = a.createdAt?.seconds || a.updatedAt?.seconds || 0;
+        const bTime = b.createdAt?.seconds || b.updatedAt?.seconds || 0;
+        return bTime - aTime;
+      });
+      setReviews(reviewsList);
+      if (snap.size > 0) {
+        setAvgRating(Math.round((total / snap.size) * 10) / 10);
+        setReviewCount(snap.size);
+      }
+    } catch (error) {
+      console.error('Error fetching reviews:', error);
+    }
+  };
+
+  useEffect(() => {
+    fetchReviews();
   }, [raceId]);
 
   // Fetch race data from Firestore to ensure we have complete data including description
@@ -533,8 +584,29 @@ export default function RaceDetailsScreen() {
           </View>
         </ScrollView>
         
-        {/* Share My Finish Button */}
-        <View className="p-6 pt-0">
+        {/* Share My Finish Button + Rate Button */}
+        <View className="p-6 pt-0" style={{ gap: 10 }}>
+          <TouchableOpacity
+            onPress={() => setShowReviewForm(true)}
+            style={{
+              backgroundColor: '#1E293B',
+              borderWidth: 1.5,
+              borderColor: '#FBBF24',
+              borderRadius: 16,
+              paddingVertical: 16,
+              alignItems: 'center',
+              flexDirection: 'row',
+              justifyContent: 'center',
+              gap: 8,
+            }}
+            activeOpacity={0.8}
+          >
+            <Star size={20} color="#FBBF24" fill="#FBBF24" />
+            <Text style={{ color: '#FBBF24', fontSize: 17, fontWeight: '700' }}>
+              {reviews.some(r => r.userId === auth.currentUser?.uid) ? 'Edit Your Review' : 'Rate This Race'}
+            </Text>
+          </TouchableOpacity>
+
           <TouchableOpacity
             onPress={handleShareFinish}
             className="bg-emerald-500 py-4 rounded-2xl items-center"
@@ -546,6 +618,15 @@ export default function RaceDetailsScreen() {
             </View>
           </TouchableOpacity>
         </View>
+
+        {/* Review Form Modal (completed race view) */}
+        <ReviewForm
+          visible={showReviewForm}
+          onClose={() => setShowReviewForm(false)}
+          trailId={raceId || ''}
+          raceName={name}
+          onReviewSubmitted={fetchReviews}
+        />
       </SafeAreaView>
     );
   }
@@ -585,9 +666,14 @@ export default function RaceDetailsScreen() {
             colors={['transparent', 'rgba(0,0,0,0.9)']}
             className="absolute bottom-0 left-0 right-0 p-4"
           >
-            <Text className="text-white text-3xl font-bold mb-2">
+            <Text className="text-white text-3xl font-bold mb-1">
               {name}
             </Text>
+            {avgRating > 0 && (
+              <View style={{ marginBottom: 4 }}>
+                <StarRating rating={avgRating} reviewCount={reviewCount} size={14} textColor="#E2E8F0" />
+              </View>
+            )}
             <Text className="text-white text-lg">
               {slogan}
             </Text>
@@ -906,6 +992,86 @@ export default function RaceDetailsScreen() {
             );
           })()}
 
+          {/* Ratings & Reviews Section */}
+          <View className="bg-[#2C3440] p-4 rounded-2xl mb-6">
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <Text className="text-white text-xl font-bold">
+                Ratings & Reviews
+              </Text>
+              {reviewCount > 0 && (
+                <StarRating rating={avgRating} reviewCount={reviewCount} size={16} />
+              )}
+            </View>
+
+            {reviews.length === 0 ? (
+              <Text style={{ color: '#64748B', fontSize: 14, textAlign: 'center', paddingVertical: 12 }}>
+                No reviews yet. Be the first to review!
+              </Text>
+            ) : (
+              reviews.slice(0, 5).map((review) => (
+                <View
+                  key={review.id}
+                  style={{
+                    borderTopWidth: 1,
+                    borderTopColor: 'rgba(71, 85, 105, 0.4)',
+                    paddingVertical: 12,
+                  }}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <Text style={{ color: '#E2E8F0', fontWeight: '700', fontSize: 14 }}>
+                      {review.reviewerName}
+                    </Text>
+                    <View style={{ flexDirection: 'row', gap: 2 }}>
+                      {[1, 2, 3, 4, 5].map((s) => (
+                        <Star
+                          key={s}
+                          size={12}
+                          color={s <= review.rating ? '#FBBF24' : '#475569'}
+                          fill={s <= review.rating ? '#FBBF24' : 'transparent'}
+                        />
+                      ))}
+                    </View>
+                  </View>
+                  {review.title ? (
+                    <Text style={{ color: '#CBD5E1', fontWeight: '600', fontSize: 14, marginBottom: 2 }}>
+                      {review.title}
+                    </Text>
+                  ) : null}
+                  {review.body ? (
+                    <Text style={{ color: '#94A3B8', fontSize: 13, lineHeight: 20 }}>
+                      {review.body}
+                    </Text>
+                  ) : null}
+                </View>
+              ))
+            )}
+
+            {/* Write/Edit review button (only if user completed this race) */}
+            {isCompleted && (
+              <TouchableOpacity
+                onPress={() => setShowReviewForm(true)}
+                style={{
+                  marginTop: 8,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  backgroundColor: 'rgba(251, 191, 36, 0.1)',
+                  borderWidth: 1,
+                  borderColor: 'rgba(251, 191, 36, 0.3)',
+                  alignItems: 'center',
+                  flexDirection: 'row',
+                  justifyContent: 'center',
+                  gap: 6,
+                }}
+                activeOpacity={0.8}
+              >
+                <Star size={16} color="#FBBF24" fill="#FBBF24" />
+                <Text style={{ color: '#FBBF24', fontWeight: '700', fontSize: 14 }}>
+                  {reviews.some(r => r.userId === auth.currentUser?.uid) ? 'Edit Your Review' : 'Write a Review'}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
           {/* Community Board Button */}
           <TouchableOpacity
             onPress={() =>
@@ -1018,6 +1184,15 @@ export default function RaceDetailsScreen() {
           trailId: raceId,
         } : undefined}
         selectedDistance={selectedDistance}
+      />
+
+      {/* Review Form Modal */}
+      <ReviewForm
+        visible={showReviewForm}
+        onClose={() => setShowReviewForm(false)}
+        trailId={raceId || ''}
+        raceName={name}
+        onReviewSubmitted={fetchReviews}
       />
     </SafeAreaView>
   );
