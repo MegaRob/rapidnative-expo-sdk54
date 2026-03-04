@@ -79,7 +79,8 @@ service cloud.firestore {
     match /chats/{chatId} {
       // Allow read if the authenticated user's ID is one of the two IDs in the chatId
       // This works even if the document doesn't exist yet (for checking before creation)
-      allow read: if request.auth != null && request.auth.uid in chatId.split('_');
+      // Admins can read all chats for analytics
+      allow read: if request.auth != null && (request.auth.uid in chatId.split('_') || isAdmin());
       
       // Allow create if the authenticated user's ID is one of the two IDs in the chatId
       allow create: if request.auth != null && request.auth.uid in chatId.split('_');

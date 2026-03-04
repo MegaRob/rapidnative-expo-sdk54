@@ -1,7 +1,7 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { arrayUnion, collection, doc, getDoc, getDocs, onSnapshot, query, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
-import { ArrowLeft, Calendar, Clock, Heart, MapPin, Mountain, Share2 } from 'lucide-react-native';
+import { ArrowLeft, Calendar, Clock, Heart, Mountain, Share2 } from 'lucide-react-native';
 import { cssInterop } from 'nativewind';
 import React, { useEffect, useState } from 'react';
 import { Alert, Dimensions, Image, Linking, Pressable, ScrollView, Share, Text, TouchableOpacity, View } from 'react-native';

@@ -225,7 +225,7 @@
       const [races, setRaces] = useState([]);
       const [directorMap, setDirectorMap] = useState({});
       const [directorDetails, setDirectorDetails] = useState({});
-      const [tab, setTab] = useState("requests");
+      const [tab, setTab] = useState("analytics");
       const [selectedRaceId, setSelectedRaceId] = useState(null);
       const [registrationCounts, setRegistrationCounts] = useState({});
       const [registrations, setRegistrations] = useState([]);
@@ -246,6 +246,10 @@
       const [raceSearch, setRaceSearch] = useState("");
       const [raceGuides, setRaceGuides] = useState([]);
       const [selectedGuideId, setSelectedGuideId] = useState(null);
+
+      // ─── Analytics state ─────────────────────────────────────────────
+      const [analytics, setAnalytics] = useState(null);
+      const [analyticsLoading, setAnalyticsLoading] = useState(false);
       const emptyDistance = () => ({
         raceTitle: "", label: "", price: "", startTime: "", elevationGain: "",
         cutoffTime: "", capacity: "", terrainTechnicality: "", gpxRouteLink: "",
@@ -368,6 +372,127 @@
           }
         });
       }, [authUser, registrations, userMap]);
+
+      // ─── Analytics: Fetch data when tab switches to analytics ─────
+      const fetchAnalytics = useCallback(async () => {
+        if (analyticsLoading) return;
+        setAnalyticsLoading(true);
+        try {
+          const now = new Date();
+          const sevenDaysAgo = new Date(now); sevenDaysAgo.setDate(now.getDate() - 7);
+          const thirtyDaysAgo = new Date(now); thirtyDaysAgo.setDate(now.getDate() - 30);
+
+          // Fetch collections in parallel
+          const [usersSnap, matchesSnap, dislikesSnap, paymentsSnap, chatsSnap] = await Promise.all([
+            db.collection("users").get(),
+            db.collection("matches").get(),
+            db.collection("users").doc(authUser.uid).collection("dislikedRaces").get().catch(() => ({ docs: [] })),
+            db.collection("payments").get().catch(() => ({ docs: [] })),
+            db.collection("chats").get().catch(() => ({ docs: [] })),
+          ]);
+
+          // We already have races and registrations in state
+          const allUsers = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+          const allMatches = matchesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+          const allPayments = paymentsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+          const allChats = chatsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+          // Helper: parse Firestore timestamps to Date
+          const toDate = (val) => {
+            if (!val) return null;
+            if (val.toDate) return val.toDate();
+            if (val.seconds) return new Date(val.seconds * 1000);
+            if (typeof val === "string") { const d = new Date(val); return isNaN(d) ? null : d; }
+            return null;
+          };
+
+          // ── User metrics ──
+          const totalUsers = allUsers.length;
+          const newUsers7d = allUsers.filter(u => { const d = toDate(u.createdAt); return d && d >= sevenDaysAgo; }).length;
+          const newUsers30d = allUsers.filter(u => { const d = toDate(u.createdAt); return d && d >= thirtyDaysAgo; }).length;
+          const usersWithTokens = allUsers.filter(u => u.expoPushToken).length;
+
+          // ── Race metrics ──
+          const totalRaces = races.length;
+          const runsignupRaces = races.filter(r => r.source === "runsignup").length;
+          const nativeRaces = totalRaces - runsignupRaces;
+          const visibleRaces = races.filter(r => r.isVisibleOnApp !== false).length;
+
+          // ── Save/swipe metrics ──
+          const totalSaves = allMatches.length;
+          const saves7d = allMatches.filter(m => { const d = toDate(m.createdAt); return d && d >= sevenDaysAgo; }).length;
+          const saves30d = allMatches.filter(m => { const d = toDate(m.createdAt); return d && d >= thirtyDaysAgo; }).length;
+
+          // Saves by race (top 10 most popular)
+          const savesByRace = {};
+          allMatches.forEach(m => { if (m.trailId) savesByRace[m.trailId] = (savesByRace[m.trailId] || 0) + 1; });
+          const topRaces = Object.entries(savesByRace)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 10)
+            .map(([trailId, count]) => {
+              const race = races.find(r => r.id === trailId);
+              return { trailId, count, name: race?.name || "Unknown Race", location: race?.location || "" };
+            });
+
+          // ── Registration metrics ──
+          const totalRegistrations = registrations.length;
+          const regs7d = registrations.filter(r => { const d = toDate(r.createdAt || r.timestamp || r.registeredAt); return d && d >= sevenDaysAgo; }).length;
+          const regs30d = registrations.filter(r => { const d = toDate(r.createdAt || r.timestamp || r.registeredAt); return d && d >= thirtyDaysAgo; }).length;
+
+          // ── Revenue metrics ──
+          const totalRevenue = allPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+          const revenue7d = allPayments.filter(p => { const d = toDate(p.createdAt); return d && d >= sevenDaysAgo; })
+            .reduce((sum, p) => sum + (p.amount || 0), 0);
+
+          // ── Chat metrics ──
+          const totalChats = allChats.length;
+          const activeChats = allChats.filter(c => c.status === "accepted").length;
+
+          // ── Daily saves (last 30 days) — for bar chart ──
+          const dailySaves = {};
+          const dailyRegs = {};
+          for (let i = 29; i >= 0; i--) {
+            const d = new Date(now); d.setDate(now.getDate() - i);
+            const key = d.toISOString().split("T")[0]; // "YYYY-MM-DD"
+            dailySaves[key] = 0;
+            dailyRegs[key] = 0;
+          }
+          allMatches.forEach(m => {
+            const d = toDate(m.createdAt);
+            if (d) { const key = d.toISOString().split("T")[0]; if (dailySaves[key] !== undefined) dailySaves[key]++; }
+          });
+          registrations.forEach(r => {
+            const d = toDate(r.createdAt || r.timestamp || r.registeredAt);
+            if (d) { const key = d.toISOString().split("T")[0]; if (dailyRegs[key] !== undefined) dailyRegs[key]++; }
+          });
+
+          // ── Unique active users (users who saved or registered in last 7 days) ──
+          const activeUserIds7d = new Set();
+          allMatches.forEach(m => { const d = toDate(m.createdAt); if (d && d >= sevenDaysAgo && m.userId) activeUserIds7d.add(m.userId); });
+          registrations.forEach(r => { const d = toDate(r.createdAt || r.timestamp); if (d && d >= sevenDaysAgo && r.userId) activeUserIds7d.add(r.userId); });
+          const activeUsers7d = activeUserIds7d.size;
+
+          setAnalytics({
+            totalUsers, newUsers7d, newUsers30d, usersWithTokens, activeUsers7d,
+            totalRaces, runsignupRaces, nativeRaces, visibleRaces,
+            totalSaves, saves7d, saves30d,
+            totalRegistrations, regs7d, regs30d,
+            totalRevenue, revenue7d,
+            totalChats, activeChats,
+            topRaces,
+            dailySaves: Object.entries(dailySaves).map(([date, count]) => ({ date, count })),
+            dailyRegs: Object.entries(dailyRegs).map(([date, count]) => ({ date, count })),
+          });
+        } catch (err) {
+          console.error("Analytics fetch error:", err);
+        } finally {
+          setAnalyticsLoading(false);
+        }
+      }, [authUser, races, registrations, analyticsLoading]);
+
+      useEffect(() => {
+        if (tab === "analytics" && !analytics && authUser) fetchAnalytics();
+      }, [tab, authUser]);
 
       const selectedRace = races.find((race) => race.id === selectedRaceId) || null;
       const filteredRaces = races.filter((race) => {
@@ -1065,6 +1190,7 @@
             </div>
             <div className="mt-4 flex gap-2">
               {[
+                { id: "analytics", label: "📊 Analytics" },
                 { id: "requests", label: "Race Requests" },
                 { id: "races", label: "All Races" },
                 { id: "guides", label: "Race Guides" },
@@ -1086,6 +1212,188 @@
       </div>
           </header>
           <main className="flex-1 px-8 py-6 space-y-6">
+
+            {/* ═══ ANALYTICS DASHBOARD ═══ */}
+            {tab === "analytics" && (
+              <div className="space-y-6">
+                {/* Header + Refresh */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-2xl font-bold text-emerald-400">📊 Analytics Dashboard</h3>
+                    <p className="text-sm text-slate-400 mt-1">Real-time platform metrics</p>
+                  </div>
+                  <button
+                    onClick={() => { setAnalytics(null); fetchAnalytics(); }}
+                    disabled={analyticsLoading}
+                    className="px-4 py-2 rounded-lg bg-emerald-500/20 text-emerald-400 text-sm font-medium hover:bg-emerald-500/30 transition-colors disabled:opacity-50"
+                  >
+                    {analyticsLoading ? "Loading..." : "↻ Refresh"}
+                  </button>
+                </div>
+
+                {analyticsLoading && !analytics ? (
+                  <div className="text-center py-20">
+                    <div className="inline-block w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mb-3" />
+                    <p className="text-slate-400">Loading analytics...</p>
+                  </div>
+                ) : analytics ? (
+                  <>
+                    {/* ── Row 1: Key Metrics ── */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      {[
+                        { label: "Total Users", value: analytics.totalUsers, sub: `+${analytics.newUsers7d} this week`, color: "text-blue-400", bg: "bg-blue-500/10", border: "border-blue-500/20" },
+                        { label: "Active Users (7d)", value: analytics.activeUsers7d, sub: `${analytics.usersWithTokens} push-enabled`, color: "text-cyan-400", bg: "bg-cyan-500/10", border: "border-cyan-500/20" },
+                        { label: "Total Saves", value: analytics.totalSaves, sub: `+${analytics.saves7d} this week`, color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20" },
+                        { label: "Registrations", value: analytics.totalRegistrations, sub: `+${analytics.regs7d} this week`, color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/20" },
+                      ].map((m, i) => (
+                        <div key={i} className={`${m.bg} border ${m.border} rounded-2xl p-5`}>
+                          <p className="text-xs text-slate-400 uppercase tracking-wider">{m.label}</p>
+                          <p className={`text-3xl font-bold mt-1 ${m.color}`}>{m.value.toLocaleString()}</p>
+                          <p className="text-xs text-slate-500 mt-1">{m.sub}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* ── Row 2: Race & Revenue ── */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      {[
+                        { label: "Total Races", value: analytics.totalRaces, sub: `${analytics.visibleRaces} visible on app`, color: "text-purple-400", bg: "bg-purple-500/10", border: "border-purple-500/20" },
+                        { label: "RunSignup Races", value: analytics.runsignupRaces, sub: `${analytics.nativeRaces} native races`, color: "text-orange-400", bg: "bg-orange-500/10", border: "border-orange-500/20" },
+                        { label: "Revenue", value: `$${(analytics.totalRevenue / 100).toFixed(2)}`, sub: `+$${(analytics.revenue7d / 100).toFixed(2)} this week`, color: "text-green-400", bg: "bg-green-500/10", border: "border-green-500/20" },
+                        { label: "Chat Activity", value: analytics.totalChats, sub: `${analytics.activeChats} active chats`, color: "text-pink-400", bg: "bg-pink-500/10", border: "border-pink-500/20" },
+                      ].map((m, i) => (
+                        <div key={i} className={`${m.bg} border ${m.border} rounded-2xl p-5`}>
+                          <p className="text-xs text-slate-400 uppercase tracking-wider">{m.label}</p>
+                          <p className={`text-3xl font-bold mt-1 ${m.color}`}>{typeof m.value === 'number' ? m.value.toLocaleString() : m.value}</p>
+                          <p className="text-xs text-slate-500 mt-1">{m.sub}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* ── Row 3: Activity Charts (Saves + Registrations, last 30 days) ── */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {/* Saves Chart */}
+                      <div className="glass p-6 rounded-2xl">
+                        <h4 className="text-sm font-semibold text-emerald-400 mb-1">Race Saves — Last 30 Days</h4>
+                        <p className="text-xs text-slate-500 mb-4">{analytics.saves30d} saves this month</p>
+                        <div className="flex items-end gap-[2px]" style={{ height: 120 }}>
+                          {analytics.dailySaves.map((d, i) => {
+                            const maxVal = Math.max(...analytics.dailySaves.map(x => x.count), 1);
+                            const pct = (d.count / maxVal) * 100;
+                            const day = new Date(d.date + 'T12:00:00').getDate();
+                            return (
+                              <div key={i} className="flex-1 flex flex-col items-center justify-end h-full group relative">
+                                <div
+                                  className="w-full bg-emerald-500/80 rounded-t hover:bg-emerald-400 transition-colors cursor-default"
+                                  style={{ height: `${Math.max(pct, 2)}%`, minHeight: d.count > 0 ? 4 : 1 }}
+                                  title={`${d.date}: ${d.count} saves`}
+                                />
+                                {(i === 0 || i === 14 || i === 29) && (
+                                  <span className="text-[9px] text-slate-500 mt-1">{day}</span>
+                                )}
+                                <div className="absolute -top-8 bg-slate-800 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-10">
+                                  {d.date}: {d.count}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Registrations Chart */}
+                      <div className="glass p-6 rounded-2xl">
+                        <h4 className="text-sm font-semibold text-amber-400 mb-1">Registrations — Last 30 Days</h4>
+                        <p className="text-xs text-slate-500 mb-4">{analytics.regs30d} registrations this month</p>
+                        <div className="flex items-end gap-[2px]" style={{ height: 120 }}>
+                          {analytics.dailyRegs.map((d, i) => {
+                            const maxVal = Math.max(...analytics.dailyRegs.map(x => x.count), 1);
+                            const pct = (d.count / maxVal) * 100;
+                            const day = new Date(d.date + 'T12:00:00').getDate();
+                            return (
+                              <div key={i} className="flex-1 flex flex-col items-center justify-end h-full group relative">
+                                <div
+                                  className="w-full bg-amber-500/80 rounded-t hover:bg-amber-400 transition-colors cursor-default"
+                                  style={{ height: `${Math.max(pct, 2)}%`, minHeight: d.count > 0 ? 4 : 1 }}
+                                  title={`${d.date}: ${d.count} registrations`}
+                                />
+                                {(i === 0 || i === 14 || i === 29) && (
+                                  <span className="text-[9px] text-slate-500 mt-1">{day}</span>
+                                )}
+                                <div className="absolute -top-8 bg-slate-800 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-10">
+                                  {d.date}: {d.count}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ── Row 4: Most Popular Races ── */}
+                    <div className="glass p-6 rounded-2xl">
+                      <h4 className="text-sm font-semibold text-emerald-400 mb-4">🏆 Most Saved Races</h4>
+                      {analytics.topRaces.length === 0 ? (
+                        <p className="text-sm text-slate-400">No saves yet.</p>
+                      ) : (
+                        <div className="space-y-3">
+                          {analytics.topRaces.map((race, i) => {
+                            const maxCount = analytics.topRaces[0]?.count || 1;
+                            const pct = (race.count / maxCount) * 100;
+                            return (
+                              <div key={race.trailId} className="flex items-center gap-3">
+                                <span className="text-sm font-bold text-slate-500 w-6 text-right">#{i + 1}</span>
+                                <div className="flex-1">
+                                  <div className="flex items-center justify-between mb-1">
+                                    <span className="text-sm text-white font-medium truncate" style={{ maxWidth: '70%' }}>{race.name}</span>
+                                    <span className="text-sm text-emerald-400 font-bold">{race.count} saves</span>
+                                  </div>
+                                  <div className="w-full bg-slate-800 rounded-full h-2">
+                                    <div
+                                      className="bg-gradient-to-r from-emerald-500 to-emerald-400 h-2 rounded-full transition-all"
+                                      style={{ width: `${pct}%` }}
+                                    />
+                                  </div>
+                                  <p className="text-[10px] text-slate-500 mt-0.5">{race.location}</p>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ── Row 5: Growth Snapshot ── */}
+                    <div className="glass p-6 rounded-2xl">
+                      <h4 className="text-sm font-semibold text-emerald-400 mb-4">📈 Growth Snapshot</h4>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                        <div>
+                          <p className="text-xs text-slate-400">New Users (30d)</p>
+                          <p className="text-2xl font-bold text-blue-400">{analytics.newUsers30d}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-slate-400">Saves (30d)</p>
+                          <p className="text-2xl font-bold text-emerald-400">{analytics.saves30d}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-slate-400">Registrations (30d)</p>
+                          <p className="text-2xl font-bold text-amber-400">{analytics.regs30d}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-slate-400">Save Rate</p>
+                          <p className="text-2xl font-bold text-cyan-400">
+                            {analytics.totalSaves > 0
+                              ? Math.round((analytics.totalSaves / (analytics.totalSaves + (analytics.totalUsers * 5))) * 100) + "%"
+                              : "—"}
+                          </p>
+                          <p className="text-[10px] text-slate-500">saves ÷ estimated swipes</p>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            )}
+
             {tab === "requests" && (
               <div className="glass p-6 rounded-2xl">
                 <div className="flex items-center justify-between mb-4">
