@@ -642,12 +642,16 @@ export default function SavedRacesScreen() {
           return;
         }
 
-        // Build trail cache
+        // Build trail cache — only include races from allowed sources
+        const ALLOWED_SOURCES = new Set(['runsignup', 'ultrasignup']);
         const newCache = new Map<string, any>();
         trailDocs.forEach((trailDoc, index) => {
           if (trailDoc?.exists()) {
-            const trailId = Array.from(trailIdsToFetch)[index];
-            newCache.set(trailId, trailDoc.data());
+            const data = trailDoc.data();
+            if (ALLOWED_SOURCES.has(data?.source)) {
+              const trailId = Array.from(trailIdsToFetch)[index];
+              newCache.set(trailId, data);
+            }
           }
         });
         setTrailCache(newCache);
