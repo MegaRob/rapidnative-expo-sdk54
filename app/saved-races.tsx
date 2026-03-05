@@ -378,14 +378,7 @@ const RegisteredRaceCard = React.memo(({
           <Text className="text-white font-bold text-center text-sm">Mark as Complete</Text>
         </TouchableOpacity>
       </View>
-      {onViewDigitalBib && (
-        <TouchableOpacity
-          onPress={() => onViewDigitalBib(race)}
-          className="mt-2 bg-slate-800 rounded-lg py-2 px-4 border border-slate-600"
-        >
-          <Text className="text-emerald-400 font-semibold text-center text-sm">View Digital Bib</Text>
-        </TouchableOpacity>
-      )}
+      {/* Digital Bib hidden for now */}
     </Pressable>
   );
 }, (prevProps, nextProps) => prevProps.race.id === nextProps.race.id);
