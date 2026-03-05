@@ -730,22 +730,6 @@ export default function RaceDetailsScreen() {
                   <Text className="text-white text-sm">{distancesOffered.join(' / ')}</Text>
                 </View>
               )}
-              <View className="flex-row justify-between">
-                <Text className="text-gray-400 text-xs">Start Time</Text>
-                <Text className="text-white text-sm">{distStartTime}</Text>
-              </View>
-              <View className="flex-row justify-between">
-                <Text className="text-gray-400 text-xs">Cutoff</Text>
-                <Text className="text-white text-sm">{distCutoff}</Text>
-              </View>
-              <View className="flex-row justify-between">
-                <Text className="text-gray-400 text-xs">Elevation Gain</Text>
-                <Text className="text-white text-sm">{distElevation}</Text>
-              </View>
-              <View className="flex-row justify-between">
-                <Text className="text-gray-400 text-xs">Aid Stations</Text>
-                <Text className="text-white text-sm">{distAidStations}</Text>
-              </View>
               {distPrice > 0 && (
                 <View className="flex-row justify-between">
                   <Text className="text-gray-400 text-xs">Price</Text>
