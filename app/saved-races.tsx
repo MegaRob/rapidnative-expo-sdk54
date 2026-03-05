@@ -579,12 +579,24 @@ export default function SavedRacesScreen() {
       try {
         setLoading(true);
         
+        // Bail out early if user signed out before we started
+        if (!auth.currentUser) {
+          setLoading(false);
+          return;
+        }
+
         // Parallelize all root collection queries
         const [matchesSnapshot, registrationsSnapshot, completedSnapshot] = await Promise.all([
           getDocs(query(collection(db, 'matches'), where('userId', '==', user.uid))),
           getDocs(query(collection(db, 'registrations'), where('userId', '==', user.uid))),
           getDocs(query(collection(db, 'completed_races'), where('userId', '==', user.uid))),
         ]);
+
+        // Bail out if user signed out during the queries
+        if (!auth.currentUser) {
+          setLoading(false);
+          return;
+        }
 
         // Extract trail IDs from all collections
         const registeredTrailIds = new Set(registrationsSnapshot.docs.map(doc => doc.data().trailId));
@@ -615,11 +627,20 @@ export default function SavedRacesScreen() {
         const trailDocs = await Promise.all(
           Array.from(trailIdsToFetch).map(trailId => 
             getDoc(doc(db, 'trails', trailId)).catch(error => {
-              console.error(`Failed to fetch trail ${trailId}:`, error);
+              // Only log if user is still authenticated (suppress logout errors)
+              if (auth.currentUser) {
+                console.error(`Failed to fetch trail ${trailId}:`, error);
+              }
               return null;
             })
           )
         );
+
+        // Bail out if user signed out during trail fetches
+        if (!auth.currentUser) {
+          setLoading(false);
+          return;
+        }
 
         // Build trail cache
         const newCache = new Map<string, any>();
@@ -717,6 +738,11 @@ export default function SavedRacesScreen() {
         
         setLoading(false);
       } catch (error: any) {
+        // Suppress permission errors caused by logout (auth token revoked mid-fetch)
+        if (!auth.currentUser) {
+          setLoading(false);
+          return;
+        }
         console.error("Error fetching saved races:", error);
         if (error.code === 'permission-denied' || error.message?.includes('permissions')) {
           console.warn("Permission denied. Make sure Firestore rules are deployed.");

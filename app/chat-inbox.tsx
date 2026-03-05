@@ -126,6 +126,7 @@ export default function ChatInboxScreen() {
         const userChats: Array<{ chatDoc: any, trailId: string }> = [];
         
         for (const buddyId of buddyIds) {
+          if (!auth.currentUser) return; // User logged out mid-fetch
           const chatId = getChatId(user.uid, buddyId);
           try {
             const chatDocRef = doc(db, 'chats', chatId);
@@ -164,6 +165,7 @@ export default function ChatInboxScreen() {
         // 6. Fetch trail names for all unique trailIds
         const trailNamesMap = new Map<string, string>(); // trailId -> trailName
         for (const trailId of trailIds) {
+          if (!auth.currentUser) return; // User logged out mid-fetch
           try {
             const trailDocRef = doc(db, 'trails', trailId);
             const trailDoc = await getDoc(trailDocRef);
@@ -172,6 +174,7 @@ export default function ChatInboxScreen() {
               trailNamesMap.set(trailId, trailData.name || 'Unknown Race');
             }
           } catch (error) {
+            if (!auth.currentUser) return; // Silently exit if logged out
             console.error(`Error fetching trail ${trailId}:`, error);
           }
         }
@@ -180,6 +183,7 @@ export default function ChatInboxScreen() {
         const enrichedChats: Buddy[] = [];
         
         for (const { chatDoc, trailId: chatTrailId } of userChats) {
+          if (!auth.currentUser) return; // User logged out mid-fetch
           try {
             const chatData = chatDoc.data;
             const userIds = chatData.userIds || [];
@@ -235,6 +239,8 @@ export default function ChatInboxScreen() {
               chatId: chatDoc.id
             });
           } catch (error) {
+            // Suppress errors caused by logout (auth token revoked mid-fetch)
+            if (!auth.currentUser) return;
             console.error(`Error processing chat ${chatDoc.id}:`, error);
           }
         }
@@ -273,7 +279,10 @@ export default function ChatInboxScreen() {
 
         setGroupedChats(grouped);
       } catch (error) {
-        console.error("Error fetching all buddies: ", error);
+        // Suppress errors caused by logout
+        if (auth.currentUser) {
+          console.error("Error fetching all buddies: ", error);
+        }
       } finally {
         setLoading(false);
       }
