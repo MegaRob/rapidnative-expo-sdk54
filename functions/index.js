@@ -1042,15 +1042,17 @@ exports.manualRunSignupSync = functions
  */
 async function fetchUltraSignupRaces() {
   const url = "https://ultrasignup.com/service/events.svc/closestevents?open=1&past=0&lat=0&lng=0&mi=50000&mo=12";
-  const raw = await httpsGet(url);
   let events;
   try {
-    events = JSON.parse(raw);
+    events = await httpsGet(url);
   } catch (e) {
-    console.error("Failed to parse UltraSignup response");
+    console.error("Failed to fetch UltraSignup events:", e.message);
     return [];
   }
-  if (!Array.isArray(events)) return [];
+  if (!Array.isArray(events)) {
+    console.error("UltraSignup response is not an array:", typeof events);
+    return [];
+  }
 
   // UltraSignup returns duplicate rows per distance — deduplicate by EventId,
   // merging all distances into a single entry.
