@@ -332,7 +332,7 @@ export default function HomeScreen() {
         .filter((d: any) => d.label)
         .map((d: any) => ({
           label: d.label,
-          elevation: d.elevationGain || data?.elevation || 'TBD',
+          elevation: d.elevationGain || '',
         }));
     }
 
@@ -344,7 +344,7 @@ export default function HomeScreen() {
       image: optimizedImage,
       date: formatDate(data?.date),
       dateRaw,
-      elevation: data?.elevation || "1,000m",
+      elevation: data?.elevation || "",
       elevationsByDistance,
       participants: data?.participants || 100,
       slogan: data?.slogan || "Discover new trails",
