@@ -66,6 +66,7 @@ interface Trail {
   avgRating?: number; // Average star rating (1-5)
   reviewCount?: number; // Number of reviews
   dateRaw?: Date; // Raw date for filtering
+  source?: string; // Race source (e.g. 'runsignup')
   position: Animated.ValueXY;
 }
 
@@ -355,6 +356,7 @@ export default function HomeScreen() {
       longitude,
       avgRating: typeof data?.avgRating === 'number' ? data.avgRating : undefined,
       reviewCount: typeof data?.reviewCount === 'number' ? data.reviewCount : undefined,
+      source: data?.source || '',
       position: new Animated.ValueXY(),
     };
     return trail;
@@ -1205,13 +1207,25 @@ export default function HomeScreen() {
             <View className="flex-1 rounded-2xl overflow-hidden bg-[#0F172A]">
               {typeof nextRace.image === 'string' && nextRace.image.trim().length > 0 ? (
                 <View className="flex-1">
-                  <ExpoImage
-                    source={{ uri: nextRace.image }}
-                    style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
-                    contentFit="cover"
-                    cachePolicy="memory-disk"
-                    priority="high"
-                  />
+                  {nextRace.source === 'runsignup' ? (
+                    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0F172A' }}>
+                      <ExpoImage
+                        source={{ uri: nextRace.image }}
+                        style={{ width: SCREEN_WIDTH * 0.45, height: SCREEN_WIDTH * 0.45, borderRadius: 16 }}
+                        contentFit="contain"
+                        cachePolicy="memory-disk"
+                        priority="high"
+                      />
+                    </View>
+                  ) : (
+                    <ExpoImage
+                      source={{ uri: nextRace.image }}
+                      style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+                      contentFit="cover"
+                      cachePolicy="memory-disk"
+                      priority="high"
+                    />
+                  )}
                 <LinearGradient
                   colors={['rgba(0,0,0,0.35)', 'rgba(0,0,0,0.2)', 'rgba(0,0,0,0.04)']}
                   className="absolute top-0 left-0 right-0 bottom-0"
@@ -1247,13 +1261,26 @@ export default function HomeScreen() {
           <View className="flex-1 rounded-2xl overflow-hidden bg-[#0F172A]">
             {/* Background image */}
             {typeof currentRace.image === 'string' && currentRace.image.trim().length > 0 && (
-              <ExpoImage
-                source={{ uri: currentRace.image }}
-                style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
-                contentFit="cover"
-                cachePolicy="memory-disk"
-                priority="high"
-              />
+              currentRace.source === 'runsignup' ? (
+                // RunSignup logos are small — show centered at a clean size instead of stretching
+                <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0F172A' }}>
+                  <ExpoImage
+                    source={{ uri: currentRace.image }}
+                    style={{ width: SCREEN_WIDTH * 0.45, height: SCREEN_WIDTH * 0.45, borderRadius: 16 }}
+                    contentFit="contain"
+                    cachePolicy="memory-disk"
+                    priority="high"
+                  />
+                </View>
+              ) : (
+                <ExpoImage
+                  source={{ uri: currentRace.image }}
+                  style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+                  contentFit="cover"
+                  cachePolicy="memory-disk"
+                  priority="high"
+                />
+              )
             )}
 
             {/* Bottom-up gradient for text readability */}
