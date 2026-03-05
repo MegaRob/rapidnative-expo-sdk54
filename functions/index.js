@@ -339,9 +339,24 @@ exports.onNewChatMessage = functions.firestore
     if (!chatDoc.exists) return null;
 
     const chatData = chatDoc.data();
-    const userIds = chatData.userIds || [];
+    // Try userIds array first, then fall back to parsing chatId (format: uid1_uid2)
+    let userIds = chatData.userIds || [];
+    if (!userIds.length && chatId.includes("_")) {
+      userIds = chatId.split("_");
+    }
     const recipientId = userIds.find((uid) => uid !== senderId);
-    if (!recipientId) return null;
+
+    // CRITICAL: Never notify the sender, and ensure we have a valid recipient
+    if (!recipientId || recipientId === senderId) {
+      console.log("onNewChatMessage: No valid recipient or recipient is sender. Skipping.");
+      return null;
+    }
+
+    // Get sender's doc (for name AND push token comparison)
+    const senderDoc = await admin.firestore().collection("users").doc(senderId).get();
+    const senderData = senderDoc.exists ? senderDoc.data() : {};
+    const senderName = senderData.username || senderData.name || "Someone";
+    const senderPushToken = senderData.expoPushToken || null;
 
     // Get recipient's push token
     const recipientDoc = await admin.firestore().collection("users").doc(recipientId).get();
@@ -351,10 +366,13 @@ exports.onNewChatMessage = functions.firestore
     const pushToken = recipientData.expoPushToken;
     if (!pushToken || !Expo.isExpoPushToken(pushToken)) return null;
 
-    // Get sender's name for the notification
-    const senderDoc = await admin.firestore().collection("users").doc(senderId).get();
-    const senderData = senderDoc.exists ? senderDoc.data() : {};
-    const senderName = senderData.username || senderData.name || "Someone";
+    // CRITICAL: If the sender and recipient have the SAME push token
+    // (e.g. same physical device, testing with two accounts), skip notification
+    // to avoid the sender receiving their own message notification
+    if (senderPushToken && pushToken === senderPushToken) {
+      console.log("onNewChatMessage: Recipient push token matches sender (same device). Skipping.");
+      return null;
+    }
 
     // Build and send the notification
     const truncatedText = text.length > 100 ? text.substring(0, 100) + "…" : text;
