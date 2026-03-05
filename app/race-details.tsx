@@ -853,14 +853,38 @@ export default function RaceDetailsScreen() {
 
           {/* Race Notes */}
           {distDescription && distDescription !== 'No description available.' ? (() => {
-            // Split into paragraphs on double newlines, single newlines, or long sentences
+            // Clean up the raw text
             const cleaned = distDescription
               .replace(/\r\n/g, '\n')
               .replace(/\n{2,}/g, '\n\n')
               .trim();
-            const paragraphs = cleaned.split(/\n\n+/).map((p: string) => p.trim()).filter((p: string) => p.length > 0);
+
+            // Split into paragraphs — if text has real newlines, use those
+            let paragraphs = cleaned.split(/\n\n+/).map((p: string) => p.trim()).filter((p: string) => p.length > 0);
+
+            // If we still have just 1 big paragraph (>200 chars with no breaks), split at sentences
+            if (paragraphs.length === 1 && paragraphs[0].length > 200) {
+              const text = paragraphs[0];
+              // Split on sentence-ending punctuation followed by a space
+              const sentences = text.match(/[^.!?]+[.!?]+(\s|$)/g) || [text];
+              // Group sentences into chunks of ~2-3 sentences per paragraph
+              const grouped: string[] = [];
+              let current = '';
+              for (const s of sentences) {
+                if (current.length + s.length > 180 && current.length > 0) {
+                  grouped.push(current.trim());
+                  current = s;
+                } else {
+                  current += s;
+                }
+              }
+              if (current.trim()) grouped.push(current.trim());
+              paragraphs = grouped;
+            }
+
             const NOTE_CHAR_LIMIT = 300;
-            const isLong = cleaned.length > NOTE_CHAR_LIMIT;
+            const totalLength = paragraphs.reduce((sum: number, p: string) => sum + p.length, 0);
+            const isLong = totalLength > NOTE_CHAR_LIMIT;
             const displayParagraphs = showFullNotes ? paragraphs : (() => {
               let charCount = 0;
               const result: string[] = [];
@@ -876,7 +900,7 @@ export default function RaceDetailsScreen() {
               <View className="bg-[#2C3440] p-4 rounded-2xl mb-6">
                 <Text className="text-white text-xl font-bold mb-3">📝 Race Notes</Text>
                 {displayParagraphs.map((paragraph: string, idx: number) => {
-                  // Check if paragraph looks like bullet points (lines starting with - or • or *)
+                  // Check if paragraph has bullet points (lines starting with - or • or *)
                   const lines = paragraph.split('\n');
                   const hasBullets = lines.some((l: string) => /^\s*[-•*]\s/.test(l));
 
@@ -886,8 +910,9 @@ export default function RaceDetailsScreen() {
                         {lines.map((line: string, lineIdx: number) => {
                           const isBullet = /^\s*[-•*]\s/.test(line);
                           const bulletText = isBullet ? line.replace(/^\s*[-•*]\s*/, '') : line;
+                          if (!line.trim()) return null;
                           return (
-                            <View key={lineIdx} className={`flex-row ${lineIdx > 0 ? 'mt-1' : ''}`}>
+                            <View key={lineIdx} className={`flex-row ${lineIdx > 0 ? 'mt-1.5' : ''}`}>
                               {isBullet && <Text className="text-emerald-400 text-sm mr-2">•</Text>}
                               <Text className={`text-gray-300 text-sm flex-1 leading-5 ${isBullet ? '' : 'mb-1'}`}>
                                 {isBullet ? bulletText : line}
@@ -905,10 +930,13 @@ export default function RaceDetailsScreen() {
                     </Text>
                   );
                 })}
+                {isLong && !showFullNotes && (
+                  <Text className="text-gray-500 text-sm mt-1">...</Text>
+                )}
                 {isLong && (
-                  <TouchableOpacity onPress={() => setShowFullNotes(!showFullNotes)} className="mt-3">
+                  <TouchableOpacity onPress={() => setShowFullNotes(!showFullNotes)} className="mt-2">
                     <Text className="text-emerald-400 text-sm font-semibold">
-                      {showFullNotes ? 'Show Less' : 'Read More...'}
+                      {showFullNotes ? '▲ Show Less' : '▼ Read More'}
                     </Text>
                   </TouchableOpacity>
                 )}

@@ -718,19 +718,33 @@ const TRAIL_STATES = [
 ];
 
 /**
- * Strip HTML tags from a string and clean up whitespace
+ * Strip HTML tags from a string, preserving paragraph/line breaks
  */
 function stripHtml(html) {
   if (!html) return "";
   return html
+    // Turn block-level tags into double newlines (paragraph breaks)
+    .replace(/<\/?(p|div|h[1-6]|blockquote|section|article|header|footer|main|aside|table|thead|tbody|tr)[^>]*>/gi, "\n\n")
+    // Turn line-break tags into single newlines
+    .replace(/<br\s*\/?>/gi, "\n")
+    // Turn list items into bullet points
+    .replace(/<li[^>]*>/gi, "\n• ")
+    .replace(/<\/li>/gi, "")
+    // Remove remaining HTML tags
     .replace(/<[^>]*>/g, " ")
+    // Decode common HTML entities
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&#34;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&nbsp;/g, " ")
-    .replace(/\s+/g, " ")
+    // Collapse multiple spaces on the same line (but keep newlines)
+    .replace(/[^\S\n]+/g, " ")
+    // Collapse 3+ newlines into 2
+    .replace(/\n{3,}/g, "\n\n")
+    // Trim each line
+    .split("\n").map((l) => l.trim()).join("\n")
     .trim()
     .slice(0, 2000); // Cap at 2000 chars
 }
