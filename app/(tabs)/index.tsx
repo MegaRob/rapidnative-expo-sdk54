@@ -1208,15 +1208,31 @@ export default function HomeScreen() {
               {typeof nextRace.image === 'string' && nextRace.image.trim().length > 0 ? (
                 <View className="flex-1">
                   {nextRace.source === 'runsignup' ? (
-                    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0F172A' }}>
+                    <>
                       <ExpoImage
                         source={{ uri: nextRace.image }}
-                        style={{ width: SCREEN_WIDTH * 0.75, height: SCREEN_WIDTH * 0.75, borderRadius: 20 }}
-                        contentFit="contain"
+                        style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+                        contentFit="cover"
+                        blurRadius={40}
                         cachePolicy="memory-disk"
-                        priority="high"
                       />
-                    </View>
+                      <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15,23,42,0.45)' }} />
+                      <View style={{ position: 'absolute', top: '12%', left: 0, right: 0, alignItems: 'center' }}>
+                        <View style={{
+                          backgroundColor: 'rgba(255,255,255,0.12)',
+                          borderRadius: 24,
+                          padding: 12,
+                        }}>
+                          <ExpoImage
+                            source={{ uri: nextRace.image }}
+                            style={{ width: SCREEN_WIDTH * 0.5, height: SCREEN_WIDTH * 0.5, borderRadius: 16 }}
+                            contentFit="contain"
+                            cachePolicy="memory-disk"
+                            priority="high"
+                          />
+                        </View>
+                      </View>
+                    </>
                   ) : (
                     <ExpoImage
                       source={{ uri: nextRace.image }}
@@ -1262,16 +1278,37 @@ export default function HomeScreen() {
             {/* Background image */}
             {typeof currentRace.image === 'string' && currentRace.image.trim().length > 0 && (
               currentRace.source === 'runsignup' ? (
-                // RunSignup logos are small — show scaled to ~75% of card instead of stretching full bleed
-                <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0F172A' }}>
+                // RunSignup: blurred full-bleed background + crisp centered logo
+                <>
                   <ExpoImage
                     source={{ uri: currentRace.image }}
-                    style={{ width: SCREEN_WIDTH * 0.75, height: SCREEN_WIDTH * 0.75, borderRadius: 20 }}
-                    contentFit="contain"
+                    style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+                    contentFit="cover"
+                    blurRadius={40}
                     cachePolicy="memory-disk"
-                    priority="high"
                   />
-                </View>
+                  <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15,23,42,0.45)' }} />
+                  <View style={{ position: 'absolute', top: '12%', left: 0, right: 0, alignItems: 'center' }}>
+                    <View style={{
+                      backgroundColor: 'rgba(255,255,255,0.12)',
+                      borderRadius: 24,
+                      padding: 12,
+                      shadowColor: '#000',
+                      shadowOffset: { width: 0, height: 8 },
+                      shadowOpacity: 0.3,
+                      shadowRadius: 16,
+                      elevation: 12,
+                    }}>
+                      <ExpoImage
+                        source={{ uri: currentRace.image }}
+                        style={{ width: SCREEN_WIDTH * 0.5, height: SCREEN_WIDTH * 0.5, borderRadius: 16 }}
+                        contentFit="contain"
+                        cachePolicy="memory-disk"
+                        priority="high"
+                      />
+                    </View>
+                  </View>
+                </>
               ) : (
                 <ExpoImage
                   source={{ uri: currentRace.image }}
