@@ -1034,6 +1034,232 @@ exports.manualRunSignupSync = functions
     return { success: true, imported: totalImported, updated: totalUpdated, skipped: totalSkipped };
   });
 
+// ─── UltraSignup Race Importer ──────────────────────────────────────────────
+
+/**
+ * Fetch races from UltraSignup's event search endpoint.
+ * Returns an array of unique events (deduplicated by EventId).
+ */
+async function fetchUltraSignupRaces() {
+  const url = "https://ultrasignup.com/service/events.svc/closestevents?open=1&past=0&lat=0&lng=0&mi=50000&mo=12";
+  const raw = await httpsGet(url);
+  let events;
+  try {
+    events = JSON.parse(raw);
+  } catch (e) {
+    console.error("Failed to parse UltraSignup response");
+    return [];
+  }
+  if (!Array.isArray(events)) return [];
+
+  // UltraSignup returns duplicate rows per distance — deduplicate by EventId,
+  // merging all distances into a single entry.
+  const eventMap = new Map();
+  for (const ev of events) {
+    if (ev.Cancelled || ev.VirtualEvent) continue;
+    const id = ev.EventId;
+    if (eventMap.has(id)) {
+      const existing = eventMap.get(id);
+      // Merge distances
+      if (ev.Distances && !existing._allDistances.includes(ev.Distances)) {
+        existing._allDistances.push(ev.Distances);
+      }
+    } else {
+      eventMap.set(id, { ...ev, _allDistances: ev.Distances ? [ev.Distances] : [] });
+    }
+  }
+  return Array.from(eventMap.values());
+}
+
+/**
+ * Map an UltraSignup event to our Firestore trails schema.
+ */
+function mapUltraSignupToTrail(event) {
+  const city = event.City || "";
+  const state = event.State || "";
+  const location = city && state ? `${city}, ${state}` : city || state || "Unknown";
+
+  // Parse distances into our format
+  const allDistStrings = event._allDistances || [];
+  const distances = allDistStrings.map((distStr) => ({
+    raceTitle: distStr,
+    label: distStr,
+    price: 0,
+    startTime: "",
+    elevationGain: "",
+    cutoffTime: "",
+    capacity: 0,
+    terrainTechnicality: 0,
+    gpxRouteLink: "",
+  }));
+  const distancesOffered = allDistStrings;
+
+  // Parse date (MM/DD/YYYY format)
+  let formattedDate = "";
+  if (event.EventDate) {
+    const cleaned = event.EventDate.replace(/\\/g, "");
+    const parts = cleaned.split("/");
+    if (parts.length === 3) {
+      formattedDate = `${parts[2]}-${parts[0].padStart(2, "0")}-${parts[1].padStart(2, "0")}`;
+    }
+  }
+
+  // Build image URL from UltraSignup's image service
+  let imageUrl = "";
+  if (event.EventImages && event.EventImages.length > 0 && event.EventImages[0].ImageId) {
+    imageUrl = `https://ultrasignup.com/service/events.svc/image/${event.EventImages[0].ImageId}`;
+  } else if (event.BannerId) {
+    imageUrl = `https://ultrasignup.com/service/events.svc/image/${event.BannerId}`;
+  }
+
+  // Build registration URL
+  const ultrasignupUrl = event.EventDateId
+    ? `https://ultrasignup.com/register.aspx?did=${event.EventDateId}`
+    : `https://ultrasignup.com/register.aspx?eid=${event.EventId}`;
+
+  return {
+    name: event.EventName || "Unnamed Race",
+    location: location,
+    date: formattedDate,
+    description: "", // UltraSignup search doesn't return descriptions
+    slogan: "",
+    image: imageUrl,
+    imageUrl: imageUrl,
+    featuredImageUrl: imageUrl,
+    logoUrl: imageUrl,
+    distancesOffered: distancesOffered,
+    distances: distances,
+    price: 0,
+    elevation: "",
+    elevationGain: "",
+    startTime: "",
+    capacity: 0,
+    website: event.EventWebsite || "",
+    // UltraSignup-specific fields
+    source: "ultrasignup",
+    ultrasignupEventId: event.EventId,
+    ultrasignupDateId: event.EventDateId || null,
+    ultrasignupUrl: ultrasignupUrl,
+    registrationType: "external",
+    isRegistrationOpen: true,
+    isVisibleOnApp: true,
+    // Geo data — UltraSignup provides coordinates!
+    latitude: event.Latitude ? parseFloat(event.Latitude) : null,
+    longitude: event.Longitude ? parseFloat(event.Longitude) : null,
+    // Timestamps
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    lastSyncedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+}
+
+/**
+ * Scheduled Cloud Function: Syncs UltraSignup races daily at 3am CT
+ */
+exports.syncUltraSignupRaces = functions
+  .runWith({ timeoutSeconds: 540, memory: "512MB" })
+  .pubsub.schedule("0 3 * * *")
+  .timeZone("America/Chicago")
+  .onRun(async () => {
+    console.log("Starting daily UltraSignup race sync...");
+
+    const db = admin.firestore();
+    const events = await fetchUltraSignupRaces();
+    console.log(`UltraSignup: ${events.length} unique events from API`);
+
+    if (events.length === 0) return null;
+
+    // Get existing UltraSignup event IDs
+    const existingSnap = await db
+      .collection("trails")
+      .where("source", "==", "ultrasignup")
+      .select("ultrasignupEventId")
+      .get();
+    const existingIds = new Set();
+    existingSnap.forEach((doc) => {
+      const eid = doc.data().ultrasignupEventId;
+      if (eid !== undefined) existingIds.add(eid);
+    });
+    console.log(`Found ${existingIds.size} existing UltraSignup races in Firestore`);
+
+    const newEvents = events.filter((e) => !existingIds.has(e.EventId));
+    console.log(`${newEvents.length} new races to import`);
+
+    let totalImported = 0;
+    const BATCH_SIZE = 400;
+    for (let i = 0; i < newEvents.length; i += BATCH_SIZE) {
+      const batch = db.batch();
+      const chunk = newEvents.slice(i, i + BATCH_SIZE);
+      for (const event of chunk) {
+        const trailData = mapUltraSignupToTrail(event);
+        batch.set(db.collection("trails").doc(), trailData);
+      }
+      await batch.commit();
+      totalImported += chunk.length;
+    }
+
+    console.log(`UltraSignup sync complete: ${totalImported} imported, ${existingIds.size} already existed`);
+    return null;
+  });
+
+/**
+ * Callable function: Manually trigger an UltraSignup sync (for admin use)
+ */
+exports.manualUltraSignupSync = functions
+  .runWith({ timeoutSeconds: 540, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
+    }
+
+    const userSnap = await admin.firestore().collection("users").doc(context.auth.uid).get();
+    const isAdmin = (userSnap.exists && userSnap.data().role === "admin") ||
+      context.auth.token.email === "rolsen83@gmail.com";
+    if (!isAdmin) {
+      throw new functions.https.HttpsError("permission-denied", "Admin access required.");
+    }
+
+    const db = admin.firestore();
+    const events = await fetchUltraSignupRaces();
+    console.log(`UltraSignup manual sync: ${events.length} unique events from API`);
+
+    if (events.length === 0) {
+      return { success: true, imported: 0, skipped: 0 };
+    }
+
+    // Get existing UltraSignup event IDs
+    const existingSnap = await db
+      .collection("trails")
+      .where("source", "==", "ultrasignup")
+      .select("ultrasignupEventId")
+      .get();
+    const existingIds = new Set();
+    existingSnap.forEach((doc) => {
+      const eid = doc.data().ultrasignupEventId;
+      if (eid !== undefined) existingIds.add(eid);
+    });
+
+    const newEvents = events.filter((e) => !existingIds.has(e.EventId));
+    const skipped = events.length - newEvents.length;
+    console.log(`${newEvents.length} new, ${skipped} already exist`);
+
+    let totalImported = 0;
+    const BATCH_SIZE = 400;
+    for (let i = 0; i < newEvents.length; i += BATCH_SIZE) {
+      const batch = db.batch();
+      const chunk = newEvents.slice(i, i + BATCH_SIZE);
+      for (const event of chunk) {
+        const trailData = mapUltraSignupToTrail(event);
+        batch.set(db.collection("trails").doc(), trailData);
+      }
+      await batch.commit();
+      totalImported += chunk.length;
+      console.log(`Batch wrote ${chunk.length} UltraSignup races`);
+    }
+
+    console.log(`UltraSignup manual sync done: ${totalImported} imported, ${skipped} skipped`);
+    return { success: true, imported: totalImported, skipped: skipped };
+  });
+
 // ─── Geocoding (OpenStreetMap Nominatim — free, no key) ─────────────────────
 
 /**

@@ -242,6 +242,7 @@
       const [isBackfilling, setIsBackfilling] = useState(false);
       const [isBackfillingRequests, setIsBackfillingRequests] = useState(false);
       const [isSyncingRunSignup, setIsSyncingRunSignup] = useState(false);
+      const [isSyncingUltraSignup, setIsSyncingUltraSignup] = useState(false);
       const [syncResult, setSyncResult] = useState(null);
       const [raceSearch, setRaceSearch] = useState("");
       const [raceGuides, setRaceGuides] = useState([]);
@@ -947,6 +948,19 @@
         setIsSyncingRunSignup(false);
       };
 
+      const handleUltraSignupSync = async () => {
+        if (!isAdmin) return;
+        setIsSyncingUltraSignup(true);
+        try {
+          const syncFn = functions.httpsCallable("manualUltraSignupSync");
+          const result = await syncFn({});
+          alert(`UltraSignup sync complete!\n${result.data.imported} new races imported\n${result.data.skipped} already existed`);
+        } catch (err) {
+          alert("UltraSignup sync failed: " + (err.message || err));
+        }
+        setIsSyncingUltraSignup(false);
+      };
+
       const handleBackfillCoordinates = async () => {
         if (!isAdmin) return;
         setIsBackfilling(true);
@@ -1578,6 +1592,17 @@
                       }`}
                     >
                       {isSyncingRunSignup ? (syncProgress || "Syncing RunSignup...") : "🔄 Sync RunSignup Races"}
+                    </button>
+                    <button
+                      onClick={handleUltraSignupSync}
+                      disabled={isSyncingUltraSignup}
+                      className={`text-xs px-3 py-2 rounded-lg ${
+                        isSyncingUltraSignup
+                          ? "bg-slate-800 text-slate-500"
+                          : "bg-purple-500 text-white"
+                      }`}
+                    >
+                      {isSyncingUltraSignup ? "Syncing UltraSignup..." : "🏔️ Sync UltraSignup Races"}
                     </button>
                   </div>
                 </div>

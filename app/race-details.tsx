@@ -1176,6 +1176,19 @@ export default function RaceDetailsScreen() {
               Register on RunSignup →
             </Text>
           </TouchableOpacity>
+        ) : !isRegistered && raceData_merged?.source === 'ultrasignup' && raceData_merged?.ultrasignupUrl ? (
+          /* External race — open UltraSignup in browser */
+          <TouchableOpacity
+            onPress={() => {
+              Linking.openURL(raceData_merged.ultrasignupUrl);
+            }}
+            className="bg-purple-500 py-4 rounded-2xl items-center mb-3"
+            activeOpacity={0.8}
+          >
+            <Text className="text-white text-lg font-bold">
+              Register on UltraSignup →
+            </Text>
+          </TouchableOpacity>
         ) : !isRegistered && (
           /* Native race — in-app Stripe registration */
           <TouchableOpacity

@@ -1207,7 +1207,7 @@ export default function HomeScreen() {
             <View className="flex-1 rounded-2xl overflow-hidden bg-[#0F172A]">
               {typeof nextRace.image === 'string' && nextRace.image.trim().length > 0 ? (
                 <View className="flex-1">
-                  {nextRace.source === 'runsignup' ? (
+                  {(nextRace.source === 'runsignup' || nextRace.source === 'ultrasignup') ? (
                     <>
                       <ExpoImage
                         source={{ uri: nextRace.image }}
@@ -1277,7 +1277,7 @@ export default function HomeScreen() {
           <View className="flex-1 rounded-2xl overflow-hidden bg-[#0F172A]">
             {/* Background image */}
             {typeof currentRace.image === 'string' && currentRace.image.trim().length > 0 && (
-              currentRace.source === 'runsignup' ? (
+              (currentRace.source === 'runsignup' || currentRace.source === 'ultrasignup') ? (
                 // RunSignup: blurred full-bleed background + crisp centered logo
                 <>
                   <ExpoImage
