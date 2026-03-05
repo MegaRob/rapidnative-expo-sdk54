@@ -711,34 +711,34 @@ export default function RaceDetailsScreen() {
 
             <View className="space-y-2">
               <View className="flex-row justify-between">
-                <Text className="text-gray-400 text-xs">Race Date</Text>
+                <Text className="text-gray-400 text-xs">📅 Race Date</Text>
                 <Text className="text-white text-sm">{date}</Text>
               </View>
               <View className="flex-row justify-between">
-                <Text className="text-gray-400 text-xs">Location</Text>
+                <Text className="text-gray-400 text-xs">📍 Location</Text>
                 <Text className="text-white text-sm">{location}</Text>
               </View>
               {hasMultipleDistances && selectedDist && (
                 <View className="flex-row justify-between">
-                  <Text className="text-gray-400 text-xs">Distance</Text>
+                  <Text className="text-gray-400 text-xs">🏃 Distance</Text>
                   <Text className="text-emerald-400 text-sm font-semibold">{selectedDist.label}</Text>
                 </View>
               )}
               {!hasMultipleDistances && distancesOffered.length > 0 && (
                 <View className="flex-row justify-between">
-                  <Text className="text-gray-400 text-xs">Distance</Text>
+                  <Text className="text-gray-400 text-xs">🏃 Distance</Text>
                   <Text className="text-white text-sm">{distancesOffered.join(' / ')}</Text>
                 </View>
               )}
               {distPrice > 0 && (
                 <View className="flex-row justify-between">
-                  <Text className="text-gray-400 text-xs">Price</Text>
+                  <Text className="text-gray-400 text-xs">💰 Price</Text>
                   <Text className="text-white text-sm">${distPrice}</Text>
                 </View>
               )}
               {distCapacity ? (
                 <View className="flex-row justify-between">
-                  <Text className="text-gray-400 text-xs">Capacity</Text>
+                  <Text className="text-gray-400 text-xs">👥 Capacity</Text>
                   <Text className="text-white text-sm">{distCapacity}</Text>
                 </View>
               ) : null}
