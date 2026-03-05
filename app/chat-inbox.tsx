@@ -95,14 +95,13 @@ export default function ChatInboxScreen() {
         }
 
         // 2. Find all other matches for those same trails to get potential buddy IDs
-        // Firestore 'IN' operator supports max 30 values, so we need to batch
-        const allMatchesSnapshots = [];
+        // Firestore 'IN' operator supports max 30 values — fire ALL batches in parallel
+        const matchBatchPromises = [];
         for (let i = 0; i < myTrailIds.length; i += 30) {
           const batch = myTrailIds.slice(i, i + 30);
-          const batchQuery = query(collection(db, 'matches'), where('trailId', 'in', batch));
-          const batchSnapshot = await getDocs(batchQuery);
-          allMatchesSnapshots.push(batchSnapshot);
+          matchBatchPromises.push(getDocs(query(collection(db, 'matches'), where('trailId', 'in', batch))));
         }
+        const allMatchesSnapshots = await Promise.all(matchBatchPromises);
         
         // Combine all results
         const allMatchesDocs = allMatchesSnapshots.flatMap(snapshot => snapshot.docs);
@@ -129,128 +128,152 @@ export default function ChatInboxScreen() {
           return;
         }
 
-        // 4. For each buddy, construct the chatId and try to fetch the chat document
-        // This way we only read chats where we know the user is a participant
-        const userChats: Array<{ chatDoc: any, trailId: string }> = [];
-        
-        for (const buddyId of buddyIds) {
-          if (!auth.currentUser) return; // User logged out mid-fetch
+        // 4. Fetch ALL chat documents in PARALLEL (instead of one-by-one)
+        if (!auth.currentUser) return;
+        const chatFetchPromises = buddyIds.map(async (buddyId) => {
           const chatId = getChatId(user.uid, buddyId);
           try {
             const chatDocRef = doc(db, 'chats', chatId);
             const chatDoc = await getDoc(chatDocRef);
-            
             if (chatDoc.exists()) {
               const chatData = chatDoc.data();
-              // Get the trailId from the chat document, or use the first shared trailId as fallback
               const trailId = chatData.trailId || (buddyTrailMap.get(buddyId)?.[0]);
               if (trailId) {
-                userChats.push({ chatDoc: { id: chatDoc.id, data: chatData }, trailId });
+                return { chatDoc: { id: chatDoc.id, data: chatData }, trailId, buddyId };
               }
             }
           } catch (error) {
             // Chat doesn't exist or permission denied - skip it
-            console.log(`Chat ${chatId} not accessible:`, error);
           }
-        }
+          return null;
+        });
+        const chatResults = await Promise.all(chatFetchPromises);
+        const userChats = chatResults.filter((r): r is NonNullable<typeof r> => r !== null);
 
         if (userChats.length === 0) {
           setLoading(false);
           return;
         }
 
-        // 5. Get unique trailIds from chat documents and fetch trail names
-        const trailIds = new Set<string>();
+        // 5. Collect unique trailIds and buddy user IDs we need to fetch
+        const trailIdsToFetch = new Set<string>();
+        const buddyIdsToFetch = new Set<string>();
         const chatTrailMap = new Map<string, string>(); // chatId -> trailId
-        
-        userChats.forEach(({ chatDoc, trailId }) => {
+
+        userChats.forEach(({ chatDoc, trailId, buddyId }) => {
           if (trailId) {
-            trailIds.add(trailId);
+            trailIdsToFetch.add(trailId);
             chatTrailMap.set(chatDoc.id, trailId);
           }
+          // Figure out the other user ID from userIds array
+          const userIds = chatDoc.data.userIds || [];
+          const otherUserId = userIds.find((uid: string) => uid !== user.uid);
+          if (otherUserId) buddyIdsToFetch.add(otherUserId);
         });
 
-        // 6. Fetch trail names for all unique trailIds
-        const trailNamesMap = new Map<string, string>(); // trailId -> trailName
-        for (const trailId of trailIds) {
-          if (!auth.currentUser) return; // User logged out mid-fetch
-          try {
-            const trailDocRef = doc(db, 'trails', trailId);
-            const trailDoc = await getDoc(trailDocRef);
-            if (trailDoc.exists()) {
-              const trailData = trailDoc.data();
-              trailNamesMap.set(trailId, trailData.name || 'Unknown Race');
-            }
-          } catch (error) {
-            if (!auth.currentUser) return; // Silently exit if logged out
-            console.error(`Error fetching trail ${trailId}:`, error);
-          }
-        }
+        // 6. Fetch ALL trail names + ALL buddy profiles + ALL last messages in PARALLEL
+        if (!auth.currentUser) return;
 
-        // 7. For each chat, get the other user's profile and last message
+        // Trail name fetches (parallel)
+        const trailPromises = Array.from(trailIdsToFetch).map(async (trailId) => {
+          try {
+            const trailDoc = await getDoc(doc(db, 'trails', trailId));
+            if (trailDoc.exists()) {
+              return { trailId, name: trailDoc.data().name || 'Unknown Race' };
+            }
+          } catch (error) { /* skip */ }
+          return { trailId, name: 'Unknown Race' };
+        });
+
+        // Buddy profile fetches (parallel)
+        const buddyProfilePromises = Array.from(buddyIdsToFetch).map(async (buddyId) => {
+          try {
+            const userDoc = await getDoc(doc(db, 'users', buddyId));
+            if (userDoc.exists()) {
+              return { buddyId, data: userDoc.data() };
+            }
+          } catch (error) { /* skip */ }
+          return { buddyId, data: null };
+        });
+
+        // Last message time — prefer lastMessageAt on chat doc (fast), fall back to subcollection query
+        const lastMessagePromises = userChats.map(async ({ chatDoc }) => {
+          // Fast path: use lastMessageAt stored directly on the chat document
+          const chatData = chatDoc.data;
+          if (chatData.lastMessageAt) {
+            const ts = chatData.lastMessageAt;
+            const lastMessageTime = ts.toDate ? ts.toDate() : (ts.seconds ? new Date(ts.seconds * 1000) : null);
+            if (lastMessageTime) return { chatId: chatDoc.id, lastMessageTime };
+          }
+          // Slow fallback: query messages subcollection (only for old chats without lastMessageAt)
+          try {
+            const messagesRef = collection(db, 'chats', chatDoc.id, 'messages');
+            const messagesQuery = query(messagesRef, orderBy('createdAt', 'desc'), limit(1));
+            const messagesSnapshot = await getDocs(messagesQuery);
+            if (!messagesSnapshot.empty) {
+              const lastMessage = messagesSnapshot.docs[0].data();
+              let lastMessageTime: Date | null = null;
+              if (lastMessage.createdAt) {
+                if (lastMessage.createdAt.toDate) {
+                  lastMessageTime = lastMessage.createdAt.toDate();
+                } else if (lastMessage.createdAt.seconds) {
+                  lastMessageTime = new Date(lastMessage.createdAt.seconds * 1000);
+                }
+              }
+              return { chatId: chatDoc.id, lastMessageTime };
+            }
+          } catch (error) { /* no messages yet */ }
+          return { chatId: chatDoc.id, lastMessageTime: null as Date | null };
+        });
+
+        // Fire ALL three groups of fetches simultaneously
+        const [trailResults, buddyProfileResults, lastMessageResults] = await Promise.all([
+          Promise.all(trailPromises),
+          Promise.all(buddyProfilePromises),
+          Promise.all(lastMessagePromises),
+        ]);
+
+        if (!auth.currentUser) return;
+
+        // Build lookup maps from parallel results
+        const trailNamesMap = new Map<string, string>();
+        trailResults.forEach(r => trailNamesMap.set(r.trailId, r.name));
+
+        const buddyProfileMap = new Map<string, any>();
+        buddyProfileResults.forEach(r => { if (r.data) buddyProfileMap.set(r.buddyId, r.data); });
+
+        const lastMessageMap = new Map<string, Date | null>();
+        lastMessageResults.forEach(r => lastMessageMap.set(r.chatId, r.lastMessageTime));
+
+        // 7. Assemble enriched chat list (no more network calls needed)
         const enrichedChats: Buddy[] = [];
         
         for (const { chatDoc, trailId: chatTrailId } of userChats) {
-          if (!auth.currentUser) return; // User logged out mid-fetch
-          try {
-            const chatData = chatDoc.data;
-            const userIds = chatData.userIds || [];
-            const otherUserId = userIds.find((uid: string) => uid !== user.uid);
-            
-            if (!otherUserId) continue; // Skip if no other user found
-            
-            // Get the other user's profile
-            const userDocRef = doc(db, 'users', otherUserId);
-            const userDoc = await getDoc(userDocRef);
-            
-            if (!userDoc.exists()) continue;
-            
-            const userData = userDoc.data();
-            const username = userData.username || '';
-            const displayName = (username.trim() === '' || username === 'NewUser') ? 'Runner' : username;
-            
-            // Get race name from trailId
-            const trailId = chatTrailMap.get(chatDoc.id) || chatTrailId;
-            const raceName = trailId && trailNamesMap.has(trailId) 
-              ? trailNamesMap.get(trailId)! 
-              : 'Unknown Race';
-            
-            // Get last message time
-            let lastMessageTime: Date | null = null;
-            try {
-              const messagesRef = collection(db, 'chats', chatDoc.id, 'messages');
-              const messagesQuery = query(messagesRef, orderBy('createdAt', 'desc'), limit(1));
-              const messagesSnapshot = await getDocs(messagesQuery);
-              
-              if (!messagesSnapshot.empty) {
-                const lastMessage = messagesSnapshot.docs[0].data();
-                if (lastMessage.createdAt) {
-                  if (lastMessage.createdAt.toDate) {
-                    lastMessageTime = lastMessage.createdAt.toDate();
-                  } else if (lastMessage.createdAt.seconds) {
-                    lastMessageTime = new Date(lastMessage.createdAt.seconds * 1000);
-                  }
-                }
-              }
-            } catch (chatError) {
-              // No messages yet - that's okay
-              console.log(`No messages found for chat ${chatDoc.id}:`, chatError);
-            }
-            
-            enrichedChats.push({
-              id: otherUserId,
-              username: displayName,
-              bio: userData.bio || 'No bio available',
-              avatarUrl: userData.avatarUrl || userData.photoURL || null,
-              lastMessageTime: lastMessageTime,
-              raceName: raceName,
-              chatId: chatDoc.id
-            });
-          } catch (error) {
-            // Suppress errors caused by logout (auth token revoked mid-fetch)
-            if (!auth.currentUser) return;
-            console.error(`Error processing chat ${chatDoc.id}:`, error);
-          }
+          const chatData = chatDoc.data;
+          const userIds = chatData.userIds || [];
+          const otherUserId = userIds.find((uid: string) => uid !== user.uid);
+          if (!otherUserId) continue;
+
+          const userData = buddyProfileMap.get(otherUserId);
+          if (!userData) continue;
+
+          const username = userData.username || '';
+          const displayName = (username.trim() === '' || username === 'NewUser') ? 'Runner' : username;
+
+          const trailId = chatTrailMap.get(chatDoc.id) || chatTrailId;
+          const raceName = trailId && trailNamesMap.has(trailId) 
+            ? trailNamesMap.get(trailId)! 
+            : 'Unknown Race';
+
+          enrichedChats.push({
+            id: otherUserId,
+            username: displayName,
+            bio: userData.bio || 'No bio available',
+            avatarUrl: userData.avatarUrl || userData.photoURL || null,
+            lastMessageTime: lastMessageMap.get(chatDoc.id) || null,
+            raceName: raceName,
+            chatId: chatDoc.id
+          });
         }
 
         // 8. Sort chats by last message time (most recent first)

@@ -714,15 +714,12 @@ export default function ChatScreen() {
         });
       });
       
-      // Ensure chat document exists with userIds
+      // Ensure chat document exists with userIds + update lastMessageAt for fast inbox loading
       const chatDocRef = doc(db, 'chats', chatIdString);
-      const chatDoc = await getDoc(chatDocRef);
-      if (!chatDoc.exists()) {
-        await setDoc(chatDocRef, {
-          userIds: [user.uid, otherUserId],
-          createdAt: Timestamp.now(),
-        }, { merge: true });
-      }
+      await setDoc(chatDocRef, {
+        userIds: [user.uid, otherUserId],
+        lastMessageAt: Timestamp.now(),
+      }, { merge: true });
     } catch (error) {
       // Rollback optimistic update on error
       setMessages(prev => prev.filter(msg => msg.tempId !== tempId));
