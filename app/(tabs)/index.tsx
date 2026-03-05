@@ -1211,7 +1211,7 @@ export default function HomeScreen() {
                     <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0F172A' }}>
                       <ExpoImage
                         source={{ uri: nextRace.image }}
-                        style={{ width: SCREEN_WIDTH * 0.45, height: SCREEN_WIDTH * 0.45, borderRadius: 16 }}
+                        style={{ width: SCREEN_WIDTH * 0.75, height: SCREEN_WIDTH * 0.75, borderRadius: 20 }}
                         contentFit="contain"
                         cachePolicy="memory-disk"
                         priority="high"
@@ -1262,11 +1262,11 @@ export default function HomeScreen() {
             {/* Background image */}
             {typeof currentRace.image === 'string' && currentRace.image.trim().length > 0 && (
               currentRace.source === 'runsignup' ? (
-                // RunSignup logos are small — show centered at a clean size instead of stretching
+                // RunSignup logos are small — show scaled to ~75% of card instead of stretching full bleed
                 <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0F172A' }}>
                   <ExpoImage
                     source={{ uri: currentRace.image }}
-                    style={{ width: SCREEN_WIDTH * 0.45, height: SCREEN_WIDTH * 0.45, borderRadius: 16 }}
+                    style={{ width: SCREEN_WIDTH * 0.75, height: SCREEN_WIDTH * 0.75, borderRadius: 20 }}
                     contentFit="contain"
                     cachePolicy="memory-disk"
                     priority="high"
