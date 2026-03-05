@@ -2,7 +2,7 @@ import { useNavigation, useRouter } from 'expo-router';
 import { arrayRemove, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, Timestamp, updateDoc, where } from "firebase/firestore";
 import { ArrowLeft, Calendar, Clock, MapPin, Pin, Trophy, X } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, FlatList, Image, LayoutAnimation, Pressable, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, FlatList, Image, LayoutAnimation, Linking, Pressable, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { auth, db } from '../src/firebaseConfig';
 import DistancePickerModal, { DistanceOption } from './components/DistancePickerModal';
@@ -789,12 +789,71 @@ export default function SavedRacesScreen() {
     }
   };
 
-  const handleRegister = (race: Race) => {
+  const handleRegister = async (race: Race) => {
     if (!user) {
       Alert.alert("Error", "Please log in to register for races");
       return;
     }
 
+    // External race (RunSignup or UltraSignup) — open external URL + confirm
+    const source = race.source;
+    const externalUrl = source === 'runsignup' ? race.runsignupUrl
+                      : source === 'ultrasignup' ? race.ultrasignupUrl
+                      : null;
+
+    if (externalUrl) {
+      const sourceName = source === 'runsignup' ? 'RunSignup' : 'UltraSignup';
+      await Linking.openURL(externalUrl);
+      // When user returns to app, ask if they completed registration
+      setTimeout(() => {
+        Alert.alert(
+          'Registration Complete?',
+          `Did you complete your registration on ${sourceName}?`,
+          [
+            { text: 'Not Yet', style: 'cancel' },
+            {
+              text: 'Yes, I Registered!',
+              onPress: async () => {
+                try {
+                  const uid = user.uid;
+                  const trailId = race.trailId || race.id;
+                  // Create registration record
+                  const regRef = doc(collection(db, 'registrations'));
+                  await setDoc(regRef, {
+                    userId: uid,
+                    trailId: trailId,
+                    registeredAt: Timestamp.now(),
+                    registrationType: 'external',
+                    source: source,
+                    distance: race.distancesOffered?.[0] || race.distance || '',
+                  });
+                  // Remove from matches (move from Liked → Registered)
+                  const matchesQuery = query(
+                    collection(db, 'matches'),
+                    where('userId', '==', uid),
+                    where('trailId', '==', trailId)
+                  );
+                  const matchesSnap = await getDocs(matchesQuery);
+                  for (const matchDoc of matchesSnap.docs) {
+                    await deleteDoc(matchDoc.ref);
+                  }
+                  // Refresh data
+                  LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                  setLikedRaces(prev => prev.filter(r => r.id !== trailId && r.trailId !== trailId));
+                  Alert.alert('🎉 Registered!', 'This race is now in your Registered tab.');
+                } catch (err) {
+                  console.error('Error saving external registration:', err);
+                  Alert.alert('Error', 'Could not save your registration. Please try again.');
+                }
+              },
+            },
+          ]
+        );
+      }, 1000);
+      return;
+    }
+
+    // Native race — in-app Stripe registration
     setActiveRegistrationRace(race);
 
     // If race has multiple distances, show picker first

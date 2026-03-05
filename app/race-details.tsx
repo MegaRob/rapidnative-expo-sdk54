@@ -1,6 +1,6 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
-import { arrayUnion, collection, doc, getDoc, getDocs, onSnapshot, query, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
+import { arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
 import { ArrowLeft, Calendar, Clock, Heart, Mountain, Share2, Star } from 'lucide-react-native';
 import { cssInterop } from 'nativewind';
 import React, { useEffect, useState } from 'react';
@@ -1164,10 +1164,53 @@ export default function RaceDetailsScreen() {
       <View className="p-6 pt-0">
         {/* Registration Button */}
         {!isRegistered && raceData_merged?.source === 'runsignup' && raceData_merged?.runsignupUrl ? (
-          /* External race — open RunSignup in browser */
+          /* External race — open RunSignup in browser, then confirm */
           <TouchableOpacity
-            onPress={() => {
-              Linking.openURL(raceData_merged.runsignupUrl);
+            onPress={async () => {
+              await Linking.openURL(raceData_merged.runsignupUrl);
+              // When user returns to app, ask if they completed registration
+              setTimeout(() => {
+                Alert.alert(
+                  'Registration Complete?',
+                  'Did you complete your registration on RunSignup?',
+                  [
+                    { text: 'Not Yet', style: 'cancel' },
+                    {
+                      text: 'Yes, I Registered!',
+                      onPress: async () => {
+                        try {
+                          const uid = auth.currentUser?.uid;
+                          if (!uid || !raceId) return;
+                          // Create registration record
+                          const regRef = doc(collection(db, 'registrations'));
+                          await setDoc(regRef, {
+                            userId: uid,
+                            trailId: raceId,
+                            registeredAt: Timestamp.now(),
+                            registrationType: 'external',
+                            source: 'runsignup',
+                            distance: selectedDistance || raceData_merged?.distance || '',
+                          });
+                          // Remove from matches (move from Liked → Registered)
+                          const matchesQuery = query(
+                            collection(db, 'matches'),
+                            where('userId', '==', uid),
+                            where('trailId', '==', raceId)
+                          );
+                          const matchesSnap = await getDocs(matchesQuery);
+                          for (const matchDoc of matchesSnap.docs) {
+                            await deleteDoc(matchDoc.ref);
+                          }
+                          Alert.alert('🎉 Registered!', 'This race is now in your Registered tab.');
+                        } catch (err) {
+                          console.error('Error saving external registration:', err);
+                          Alert.alert('Error', 'Could not save your registration. Please try again.');
+                        }
+                      },
+                    },
+                  ]
+                );
+              }, 1000);
             }}
             className="bg-orange-500 py-4 rounded-2xl items-center mb-3"
             activeOpacity={0.8}
@@ -1177,10 +1220,53 @@ export default function RaceDetailsScreen() {
             </Text>
           </TouchableOpacity>
         ) : !isRegistered && raceData_merged?.source === 'ultrasignup' && raceData_merged?.ultrasignupUrl ? (
-          /* External race — open UltraSignup in browser */
+          /* External race — open UltraSignup in browser, then confirm */
           <TouchableOpacity
-            onPress={() => {
-              Linking.openURL(raceData_merged.ultrasignupUrl);
+            onPress={async () => {
+              await Linking.openURL(raceData_merged.ultrasignupUrl);
+              // When user returns to app, ask if they completed registration
+              setTimeout(() => {
+                Alert.alert(
+                  'Registration Complete?',
+                  'Did you complete your registration on UltraSignup?',
+                  [
+                    { text: 'Not Yet', style: 'cancel' },
+                    {
+                      text: 'Yes, I Registered!',
+                      onPress: async () => {
+                        try {
+                          const uid = auth.currentUser?.uid;
+                          if (!uid || !raceId) return;
+                          // Create registration record
+                          const regRef = doc(collection(db, 'registrations'));
+                          await setDoc(regRef, {
+                            userId: uid,
+                            trailId: raceId,
+                            registeredAt: Timestamp.now(),
+                            registrationType: 'external',
+                            source: 'ultrasignup',
+                            distance: selectedDistance || raceData_merged?.distance || '',
+                          });
+                          // Remove from matches (move from Liked → Registered)
+                          const matchesQuery = query(
+                            collection(db, 'matches'),
+                            where('userId', '==', uid),
+                            where('trailId', '==', raceId)
+                          );
+                          const matchesSnap = await getDocs(matchesQuery);
+                          for (const matchDoc of matchesSnap.docs) {
+                            await deleteDoc(matchDoc.ref);
+                          }
+                          Alert.alert('🎉 Registered!', 'This race is now in your Registered tab.');
+                        } catch (err) {
+                          console.error('Error saving external registration:', err);
+                          Alert.alert('Error', 'Could not save your registration. Please try again.');
+                        }
+                      },
+                    },
+                  ]
+                );
+              }, 1000);
             }}
             className="bg-purple-500 py-4 rounded-2xl items-center mb-3"
             activeOpacity={0.8}
