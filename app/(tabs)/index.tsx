@@ -491,8 +491,12 @@ export default function HomeScreen() {
           return;
         }
 
+        const ALLOWED_SOURCES = new Set(['runsignup', 'ultrasignup']);
         let trailsList = trailSnapshot.docs
-          .filter(docSnap => docSnap.data()?.isVisibleOnApp !== false)
+          .filter(docSnap => {
+            const d = docSnap.data();
+            return d?.isVisibleOnApp !== false && ALLOWED_SOURCES.has(d?.source);
+          })
           .map(docSnap => buildTrail(docSnap.id, docSnap.data()))
           .filter(trail => !ignoredIds.has(trail.id));
 
@@ -596,10 +600,14 @@ export default function HomeScreen() {
       setLastVisibleDoc(snapshot.docs[snapshot.docs.length - 1]);
       setHasMoreRaces(snapshot.docs.length >= RACE_BATCH_SIZE);
 
-      // Build new trails, filtering out hidden and already-seen races
+      // Build new trails, filtering out hidden, non-allowed sources, and already-seen races
       const excluded = excludedIdsRef.current;
+      const ALLOWED_SOURCES = new Set(['runsignup', 'ultrasignup']);
       let newTrails = snapshot.docs
-        .filter(docSnap => docSnap.data()?.isVisibleOnApp !== false)
+        .filter(docSnap => {
+          const d = docSnap.data();
+          return d?.isVisibleOnApp !== false && ALLOWED_SOURCES.has(d?.source);
+        })
         .map(docSnap => buildTrail(docSnap.id, docSnap.data()))
         .filter(trail => !excluded.has(trail.id));
 

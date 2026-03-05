@@ -106,25 +106,28 @@ export default function SearchScreen() {
         const racesQuery = query(collection(db, 'trails'), orderBy('name'), limit(5000));
         const snap = await getDocs(racesQuery);
 
-        const races: SearchResult[] = snap.docs.map((doc) => {
-          const d = doc.data();
-          return {
-            id: doc.id,
-            name: d.name || 'Unnamed Race',
-            location: d.location || '',
-            date: formatDate(d.date),
-            imageUrl:
-              normalizeImageUrl(d.imageUrl) ||
-              normalizeImageUrl(d.image) ||
-              normalizeImageUrl(d.featuredImageUrl) ||
-              normalizeImageUrl(d.logoUrl) ||
-              '',
-            avgRating: typeof d.avgRating === 'number' ? d.avgRating : undefined,
-            reviewCount: typeof d.reviewCount === 'number' ? d.reviewCount : undefined,
-            distancesOffered: Array.isArray(d.distancesOffered) ? d.distancesOffered : [],
-            distance: d.distance || '',
-          };
-        });
+        const ALLOWED_SOURCES = new Set(['runsignup', 'ultrasignup']);
+        const races: SearchResult[] = snap.docs
+          .filter((doc) => ALLOWED_SOURCES.has(doc.data()?.source))
+          .map((doc) => {
+            const d = doc.data();
+            return {
+              id: doc.id,
+              name: d.name || 'Unnamed Race',
+              location: d.location || '',
+              date: formatDate(d.date),
+              imageUrl:
+                normalizeImageUrl(d.imageUrl) ||
+                normalizeImageUrl(d.image) ||
+                normalizeImageUrl(d.featuredImageUrl) ||
+                normalizeImageUrl(d.logoUrl) ||
+                '',
+              avgRating: typeof d.avgRating === 'number' ? d.avgRating : undefined,
+              reviewCount: typeof d.reviewCount === 'number' ? d.reviewCount : undefined,
+              distancesOffered: Array.isArray(d.distancesOffered) ? d.distancesOffered : [],
+              distance: d.distance || '',
+            };
+          });
 
         setAllRaces(races);
       } catch (error) {
