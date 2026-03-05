@@ -48,6 +48,7 @@ export default function RaceDetailsScreen() {
   const [showRegistrationModal, setShowRegistrationModal] = useState(false);
   const [selectedDistance, setSelectedDistance] = useState<string | undefined>(undefined);
   const [showReviewForm, setShowReviewForm] = useState(false);
+  const [showFullNotes, setShowFullNotes] = useState(false);
   const [reviews, setReviews] = useState<any[]>([]);
   const [avgRating, setAvgRating] = useState(0);
   const [reviewCount, setReviewCount] = useState(0);
@@ -851,15 +852,74 @@ export default function RaceDetailsScreen() {
           ) : null}
 
           {/* Race Notes */}
-          {distDescription && distDescription !== 'No description available.' ? (
-            <View className="bg-[#2C3440] p-4 rounded-2xl mb-6">
-              <Text className="text-white text-xl font-bold mb-3">Race Notes</Text>
-              <Text className="text-gray-300 text-sm">{distDescription}</Text>
-              {website ? (
-                <Text className="text-emerald-400 text-sm mt-3">Website: {website}</Text>
-              ) : null}
-            </View>
-          ) : null}
+          {distDescription && distDescription !== 'No description available.' ? (() => {
+            // Split into paragraphs on double newlines, single newlines, or long sentences
+            const cleaned = distDescription
+              .replace(/\r\n/g, '\n')
+              .replace(/\n{2,}/g, '\n\n')
+              .trim();
+            const paragraphs = cleaned.split(/\n\n+/).map((p: string) => p.trim()).filter((p: string) => p.length > 0);
+            const NOTE_CHAR_LIMIT = 300;
+            const isLong = cleaned.length > NOTE_CHAR_LIMIT;
+            const displayParagraphs = showFullNotes ? paragraphs : (() => {
+              let charCount = 0;
+              const result: string[] = [];
+              for (const p of paragraphs) {
+                if (charCount + p.length > NOTE_CHAR_LIMIT && result.length > 0) break;
+                result.push(p);
+                charCount += p.length;
+              }
+              return result;
+            })();
+
+            return (
+              <View className="bg-[#2C3440] p-4 rounded-2xl mb-6">
+                <Text className="text-white text-xl font-bold mb-3">📝 Race Notes</Text>
+                {displayParagraphs.map((paragraph: string, idx: number) => {
+                  // Check if paragraph looks like bullet points (lines starting with - or • or *)
+                  const lines = paragraph.split('\n');
+                  const hasBullets = lines.some((l: string) => /^\s*[-•*]\s/.test(l));
+
+                  if (hasBullets) {
+                    return (
+                      <View key={idx} className={idx > 0 ? 'mt-3' : ''}>
+                        {lines.map((line: string, lineIdx: number) => {
+                          const isBullet = /^\s*[-•*]\s/.test(line);
+                          const bulletText = isBullet ? line.replace(/^\s*[-•*]\s*/, '') : line;
+                          return (
+                            <View key={lineIdx} className={`flex-row ${lineIdx > 0 ? 'mt-1' : ''}`}>
+                              {isBullet && <Text className="text-emerald-400 text-sm mr-2">•</Text>}
+                              <Text className={`text-gray-300 text-sm flex-1 leading-5 ${isBullet ? '' : 'mb-1'}`}>
+                                {isBullet ? bulletText : line}
+                              </Text>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    );
+                  }
+
+                  return (
+                    <Text key={idx} className={`text-gray-300 text-sm leading-5 ${idx > 0 ? 'mt-3' : ''}`}>
+                      {paragraph}
+                    </Text>
+                  );
+                })}
+                {isLong && (
+                  <TouchableOpacity onPress={() => setShowFullNotes(!showFullNotes)} className="mt-3">
+                    <Text className="text-emerald-400 text-sm font-semibold">
+                      {showFullNotes ? 'Show Less' : 'Read More...'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                {website ? (
+                  <TouchableOpacity onPress={() => Linking.openURL(website)} className="mt-3">
+                    <Text className="text-emerald-400 text-sm">🌐 Visit Website</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            );
+          })() : null}
 
           {/* Who is Going */}
           {otherRunners.length > 0 && (() => {
