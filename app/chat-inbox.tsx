@@ -1,7 +1,9 @@
-import { useFocusEffect, useRouter } from 'expo-router';
-import { collection, doc, documentId, getDoc, getDocs, query, setDoc, updateDoc, where, orderBy, limit, Timestamp } from 'firebase/firestore';
+import { useFocusEffect, useNavigation, useRouter } from 'expo-router';
+import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc, where } from 'firebase/firestore';
+import { ArrowLeft } from 'lucide-react-native';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, Image, Pressable, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth, db } from '../src/firebaseConfig';
 
 // Helper to create a unique chat ID
@@ -64,6 +66,12 @@ export default function ChatInboxScreen() {
 
   const user = auth.currentUser;
   const router = useRouter();
+  const navigation = useNavigation();
+
+  // Hide the default header (removes "(tabs)" back label and "chat-inbox" title)
+  useEffect(() => {
+    navigation.setOptions({ headerShown: false });
+  }, [navigation]);
 
   const fetchAllBuddies = useCallback(async () => {
       if (!user) {
@@ -326,87 +334,100 @@ export default function ChatInboxScreen() {
 
   if (loading) {
     return (
-      <View className="flex-1 bg-gray-900 items-center justify-center">
-        <ActivityIndicator size="large" color="#8BC34A" />
-      </View>
+      <SafeAreaView className="flex-1 bg-[#1A1F25]" edges={['top', 'left', 'right']}>
+        <View className="flex-1 items-center justify-center">
+          <ActivityIndicator size="large" color="#8BC34A" />
+        </View>
+      </SafeAreaView>
     );
   }
 
   return (
-    <View className="flex-1 bg-gray-900 p-5">
-      <Text className="text-2xl font-bold text-white mb-1 mt-10">My Chats</Text>
-      <Text className="text-sm text-gray-400 mb-5">Conversations grouped by race</Text>
+    <SafeAreaView className="flex-1 bg-[#1A1F25]" edges={['top', 'left', 'right']}>
+      {/* Header */}
+      <View className="px-4 pb-2 flex-row items-center">
+        <TouchableOpacity onPress={() => router.back()} className="mr-4">
+          <ArrowLeft size={24} color="#8BC34A" />
+        </TouchableOpacity>
+        <View>
+          <Text className="text-2xl font-bold text-white">My Chats</Text>
+          <Text className="text-sm text-gray-400">Conversations grouped by race</Text>
+        </View>
+      </View>
 
-      {Object.keys(groupedChats).length === 0 ? (
-        <Text className="text-base text-gray-400 text-center mt-12">No chats found yet. Start a conversation!</Text>
-      ) : (
-        <FlatList
-          data={Object.entries(groupedChats)}
-          keyExtractor={([raceName]) => raceName}
-          contentContainerStyle={{ paddingBottom: 20 }}
-          renderItem={({ item: [raceName, buddies] }) => {
-            return (
-              <View className="mb-6">
-                {/* Race Name Header */}
-                <Text className="text-xl font-bold text-white mt-6 mb-2">{raceName}</Text>
-                
-                {/* List of chats for this race */}
-                {buddies.map((buddy) => {
-                  const hasUnread = false; // TODO: Replace with actual unread count logic
-                  const displayName = (buddy.username && buddy.username.trim() !== '' && buddy.username !== 'NewUser') 
-                    ? buddy.username 
-                    : 'Runner';
+      <View className="flex-1 px-4">
+        {Object.keys(groupedChats).length === 0 ? (
+          <Text className="text-base text-gray-400 text-center mt-12">No chats found yet. Start a conversation!</Text>
+        ) : (
+          <FlatList
+            data={Object.entries(groupedChats)}
+            keyExtractor={([raceName]) => raceName}
+            contentContainerStyle={{ paddingBottom: 20 }}
+            showsVerticalScrollIndicator={false}
+            renderItem={({ item: [raceName, buddies] }) => {
+              return (
+                <View className="mb-4">
+                  {/* Race Name Header */}
+                  <Text className="text-lg font-bold text-emerald-400 mt-4 mb-2">{raceName}</Text>
                   
-                  return (
-                    <Pressable 
-                      key={buddy.id}
-                      className="bg-gray-800 rounded-lg p-4 flex-row items-center mb-3"
-                      onPress={() => router.push({ 
-                        pathname: "/chat", 
-                        params: { 
-                          chatId: buddy.chatId,
-                          buddyId: buddy.id, 
-                          buddyName: displayName 
-                        } 
-                      })}
-                    >
-                      {/* Avatar */}
-                      <Image
-                        source={{
-                          uri: buddy.avatarUrl || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=900&auto=format&fit=crop&q=60&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxzZWFyY2h8M3x8dXNlcnxlbnwwfHwwfHx8MA%3D%3D'
-                        }}
-                        className="rounded-full w-12 h-12"
-                      />
-                      
-                      {/* Text Content (Middle) */}
-                      <View className="flex-1 ml-4 mr-3">
-                        <Text className="text-white font-bold text-lg">{displayName}</Text>
-                      </View>
-                      
-                      {/* Metadata (Right Side) */}
-                      <View className="items-end" style={{ minWidth: 75, flexShrink: 0 }}>
-                        {buddy.lastMessageTime ? (
-                          <Text className="text-gray-400 text-xs mb-1" numberOfLines={1} style={{ textAlign: 'right' }}>
-                            {formatTimeAgo(buddy.lastMessageTime)}
-                          </Text>
-                        ) : (
-                          <Text className="text-gray-400 text-xs mb-1">New</Text>
-                        )}
-                        {/* Unread badge - conditionally render if there are unread messages */}
-                        {hasUnread && (
-                          <View className="bg-green-500 rounded-full w-5 h-5 items-center justify-center">
-                            <Text className="text-white text-xs font-bold">2</Text>
-                          </View>
-                        )}
-                      </View>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            );
-          }}
-        />
-      )}
-    </View>
+                  {/* List of chats for this race */}
+                  {buddies.map((buddy) => {
+                    const hasUnread = false; // TODO: Replace with actual unread count logic
+                    const displayName = (buddy.username && buddy.username.trim() !== '' && buddy.username !== 'NewUser') 
+                      ? buddy.username 
+                      : 'Runner';
+                    
+                    return (
+                      <Pressable 
+                        key={buddy.id}
+                        className="bg-[#2C3440] rounded-2xl p-4 flex-row items-center mb-3"
+                        onPress={() => router.push({ 
+                          pathname: "/chat", 
+                          params: { 
+                            chatId: buddy.chatId,
+                            buddyId: buddy.id, 
+                            buddyName: displayName 
+                          } 
+                        })}
+                      >
+                        {/* Avatar */}
+                        <Image
+                          source={{
+                            uri: buddy.avatarUrl || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=900&auto=format&fit=crop&q=60&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxzZWFyY2h8M3x8dXNlcnxlbnwwfHwwfHx8MA%3D%3D'
+                          }}
+                          className="rounded-full w-12 h-12"
+                        />
+                        
+                        {/* Text Content (Middle) */}
+                        <View className="flex-1 ml-4 mr-3">
+                          <Text className="text-white font-bold text-lg">{displayName}</Text>
+                        </View>
+                        
+                        {/* Metadata (Right Side) */}
+                        <View className="items-end" style={{ minWidth: 75, flexShrink: 0 }}>
+                          {buddy.lastMessageTime ? (
+                            <Text className="text-gray-400 text-xs mb-1" numberOfLines={1} style={{ textAlign: 'right' }}>
+                              {formatTimeAgo(buddy.lastMessageTime)}
+                            </Text>
+                          ) : (
+                            <Text className="text-gray-400 text-xs mb-1">New</Text>
+                          )}
+                          {/* Unread badge */}
+                          {hasUnread && (
+                            <View className="bg-green-500 rounded-full w-5 h-5 items-center justify-center">
+                              <Text className="text-white text-xs font-bold">2</Text>
+                            </View>
+                          )}
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              );
+            }}
+          />
+        )}
+      </View>
+    </SafeAreaView>
   );
 }
