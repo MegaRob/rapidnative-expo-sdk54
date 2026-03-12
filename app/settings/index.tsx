@@ -1,11 +1,12 @@
 import { useNavigation, useRouter } from 'expo-router';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { ArrowLeft } from 'lucide-react-native';
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, Switch, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Switch, Text, TouchableOpacity, View } from 'react-native';
+import KeyboardScreen from '../components/KeyboardScreen';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth, db } from '../../src/firebaseConfig';
-import LocationModal from '../components/LocationModal';
+import LocationModal, { LocationModalHandle } from '../components/LocationModal';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -16,7 +17,7 @@ export default function SettingsScreen() {
   const [locationName, setLocationName] = useState<string>('');
   const [latitude, setLatitude] = useState<number | null>(null);
   const [longitude, setLongitude] = useState<number | null>(null);
-  const [showLocationModal, setShowLocationModal] = useState(false);
+  const locationModalRef = useRef<LocationModalHandle>(null);
   const user = auth.currentUser;
 
   // Hide default header
@@ -132,7 +133,7 @@ export default function SettingsScreen() {
       </View>
 
       {/* Content */}
-      <ScrollView className="flex-1 p-5 pt-2">
+      <KeyboardScreen contentContainerStyle={{ padding: 20, paddingTop: 8 }}>
         {/* Privacy Settings Section */}
         <View className="bg-gray-800 rounded-lg p-5 mb-4">
           <Text className="text-white text-xl font-bold mb-4">Privacy Settings</Text>
@@ -171,7 +172,7 @@ export default function SettingsScreen() {
 
           {/* Change Location Button */}
           <TouchableOpacity
-            onPress={() => setShowLocationModal(true)}
+            onPress={() => locationModalRef.current?.present()}
             className="w-full bg-green-500 py-3 rounded-lg items-center"
           >
             <Text className="text-white text-base font-semibold">Change Location</Text>
@@ -194,13 +195,12 @@ export default function SettingsScreen() {
             <Text className="text-gray-400">›</Text>
           </TouchableOpacity>
         </View>
-      </ScrollView>
+      </KeyboardScreen>
 
       {/* Location Modal */}
       <LocationModal
-        visible={showLocationModal}
+        ref={locationModalRef}
         currentLocationName={locationName}
-        onClose={() => setShowLocationModal(false)}
         onLocationSet={handleLocationSet}
       />
     </SafeAreaView>

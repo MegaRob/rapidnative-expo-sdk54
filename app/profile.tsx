@@ -58,7 +58,7 @@ export default function ProfileScreen() {
             // Set profile image from user's photoURL or avatarUrl
             setProfileImageUrl(data.avatarUrl || user.photoURL || null);
           } else {
-            console.log("No such user document!");
+            // No user document found
           }
         } catch (error) {
           console.error("Error fetching user data: ", error);

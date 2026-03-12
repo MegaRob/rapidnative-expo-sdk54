@@ -1,17 +1,13 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
-  Modal,
-  TextInput,
   Pressable,
   Alert,
-  KeyboardAvoidingView,
-  Platform,
 } from "react-native";
-import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
+import { BottomSheetTextInput } from "@gorhom/bottom-sheet";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { ArrowLeft, Plus, Car, Users, Info } from "lucide-react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -30,6 +26,9 @@ import {
   increment,
 } from "firebase/firestore";
 import { auth, db } from "../../src/firebaseConfig";
+import StandardBottomSheet, {
+  StandardBottomSheetHandle,
+} from "../components/StandardBottomSheet";
 
 type PostCategory = "All" | "Carpool" | "Pacer" | "Crew";
 type PostType = "Carpool" | "Pacer" | "Crew";
@@ -68,18 +67,20 @@ export default function RaceCommunityHub() {
   const trailId = Array.isArray(params?.trailId) ? params.trailId[0] : params?.trailId;
   const trailName = Array.isArray(params?.trailName) ? params.trailName[0] : params?.trailName;
   const [activeCategory, setActiveCategory] = useState<PostCategory>("All");
-  const [isPostModalVisible, setIsPostModalVisible] = useState(false);
   const [newPostCategory, setNewPostCategory] = useState<PostType>("Carpool");
   const [newPostIntent, setNewPostIntent] = useState<PostIntent>("seeking");
   const [newPostContent, setNewPostContent] = useState("");
   const [posts, setPosts] = useState<CommunityPost[]>([]);
   const [authorName, setAuthorName] = useState("");
   const [interestedMap, setInterestedMap] = useState<Record<string, boolean>>({});
-  const [postMenuVisible, setPostMenuVisible] = useState(false);
   const [activePost, setActivePost] = useState<CommunityPost | null>(null);
   const [editContent, setEditContent] = useState("");
   const [editCategory, setEditCategory] = useState<PostType>("Carpool");
   const [editIntent, setEditIntent] = useState<PostIntent>("seeking");
+
+  // Refs for bottom sheets
+  const createPostSheetRef = useRef<StandardBottomSheetHandle>(null);
+  const editPostSheetRef = useRef<StandardBottomSheetHandle>(null);
 
   useEffect(() => {
     if (!trailId) {
@@ -247,7 +248,7 @@ export default function RaceCommunityHub() {
       timestamp: Timestamp.now(),
     });
 
-    setIsPostModalVisible(false);
+    createPostSheetRef.current?.close();
     setNewPostContent("");
     setNewPostIntent(getDefaultIntent(newPostCategory));
   };
@@ -257,7 +258,7 @@ export default function RaceCommunityHub() {
     setEditContent(post.content || "");
     setEditCategory(post.type || "Carpool");
     setEditIntent(post.intent || getDefaultIntent(post.type || "Carpool"));
-    setPostMenuVisible(true);
+    editPostSheetRef.current?.present();
   };
 
   const handleUpdatePost = async () => {
@@ -284,7 +285,7 @@ export default function RaceCommunityHub() {
         tags: [editCategory, getIntentLabel(editCategory, editIntent)],
         updatedAt: Timestamp.now(),
       });
-      setPostMenuVisible(false);
+      editPostSheetRef.current?.close();
       setActivePost(null);
     } catch (error) {
       console.error("Failed to update post:", error);
@@ -306,7 +307,7 @@ export default function RaceCommunityHub() {
         activePost.id
       );
       await deleteDoc(postRef);
-      setPostMenuVisible(false);
+      editPostSheetRef.current?.close();
       setActivePost(null);
     } catch (error) {
       console.error("Failed to delete post:", error);
@@ -395,7 +396,7 @@ export default function RaceCommunityHub() {
 
       <TouchableOpacity
         className="mx-4 mb-4 p-4 rounded-[2rem] border-2 border-dashed border-emerald-500 items-center justify-center"
-        onPress={() => setIsPostModalVisible(true)}
+        onPress={() => createPostSheetRef.current?.present()}
       >
         <Plus size={32} color="#34C759" />
         <Text className="text-emerald-500 text-lg font-bold mt-2">Post a Need or Offer</Text>
@@ -489,209 +490,226 @@ export default function RaceCommunityHub() {
         )}
       </ScrollView>
 
-      <Modal
-        visible={isPostModalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setIsPostModalVisible(false)}
+      {/* Create Post Bottom Sheet */}
+      <StandardBottomSheet
+        ref={createPostSheetRef}
+        title="Create Post"
+        snapPoints={['60%', '85%']}
       >
-        <KeyboardAvoidingView
-          className="flex-1"
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          keyboardVerticalOffset={0}
-        >
-          <Pressable className="flex-1 bg-black/70" onPress={() => setIsPostModalVisible(false)} />
-          <KeyboardAwareScrollView
-            style={{ backgroundColor: '#0f172a', borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '80%' }}
-            contentContainerStyle={{ padding: 24 }}
-            keyboardShouldPersistTaps="handled"
-            bottomOffset={40}
+        <View style={{ marginBottom: 16 }}>
+          <Text style={{ color: '#CBD5E1', marginBottom: 8 }}>Category</Text>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {(["Carpool", "Pacer", "Crew"] as PostType[]).map((category) => (
+              <TouchableOpacity
+                key={category}
+                style={{
+                  paddingHorizontal: 16,
+                  paddingVertical: 8,
+                  borderRadius: 20,
+                  backgroundColor: newPostCategory === category ? '#10B981' : 'transparent',
+                  borderWidth: newPostCategory === category ? 0 : 1,
+                  borderColor: '#334155',
+                }}
+                onPress={() => {
+                  setNewPostCategory(category);
+                  setNewPostIntent(getDefaultIntent(category));
+                }}
+              >
+                <Text
+                  style={{
+                    fontWeight: '500',
+                    color: newPostCategory === category ? '#0F172A' : '#CBD5E1',
+                  }}
+                >
+                  {category}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        <View style={{ marginBottom: 16 }}>
+          <Text style={{ color: '#CBD5E1', marginBottom: 8 }}>Offering or Seeking</Text>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {(["seeking", "offering"] as PostIntent[]).map((intent) => (
+              <TouchableOpacity
+                key={intent}
+                style={{
+                  paddingHorizontal: 16,
+                  paddingVertical: 8,
+                  borderRadius: 20,
+                  backgroundColor: newPostIntent === intent ? '#10B981' : 'transparent',
+                  borderWidth: newPostIntent === intent ? 0 : 1,
+                  borderColor: '#334155',
+                }}
+                onPress={() => setNewPostIntent(intent)}
+              >
+                <Text
+                  style={{
+                    fontWeight: '500',
+                    color: newPostIntent === intent ? '#0F172A' : '#CBD5E1',
+                  }}
+                >
+                  {getIntentLabel(newPostCategory, intent)}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        <View style={{ marginBottom: 24 }}>
+          <Text style={{ color: '#CBD5E1', marginBottom: 8 }}>Details</Text>
+          <BottomSheetTextInput
+            style={{
+              backgroundColor: 'rgba(15, 23, 42, 0.6)',
+              borderRadius: 12,
+              padding: 16,
+              color: '#FFFFFF',
+              fontSize: 16,
+              height: 128,
+              borderWidth: 1,
+              borderColor: 'rgba(71, 85, 105, 0.5)',
+              textAlignVertical: 'top',
+            }}
+            placeholder="Describe what you're offering or seeking..."
+            placeholderTextColor="#94a3b8"
+            selectionColor="#10B981"
+            multiline
+            value={newPostContent}
+            onChangeText={setNewPostContent}
+            onFocus={() => requestAnimationFrame(() => createPostSheetRef.current?.expand())}
+          />
+        </View>
+
+        <View style={{ flexDirection: 'row', gap: 12 }}>
+          <TouchableOpacity
+            style={{ flex: 1, backgroundColor: '#1E293B', paddingVertical: 12, borderRadius: 20, alignItems: 'center' }}
+            onPress={() => createPostSheetRef.current?.close()}
           >
-            <Text className="text-white text-xl font-bold mb-4">Create Post</Text>
+            <Text style={{ color: '#FFFFFF', fontWeight: '700' }}>Cancel</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={{ flex: 1, backgroundColor: '#10B981', paddingVertical: 12, borderRadius: 20, alignItems: 'center' }}
+            onPress={handlePostSubmit}
+          >
+            <Text style={{ color: '#0F172A', fontWeight: '700' }}>Post</Text>
+          </TouchableOpacity>
+        </View>
+      </StandardBottomSheet>
 
-            <View className="mb-4">
-              <Text className="text-slate-300 mb-2">Category</Text>
-              <View className="flex-row gap-2">
-                {(["Carpool", "Pacer", "Crew"] as PostType[]).map((category) => (
-                  <TouchableOpacity
-                    key={category}
-                    className={`px-4 py-2 rounded-full ${
-                      newPostCategory === category ? "bg-emerald-500" : "border border-slate-700"
-                    }`}
-                    onPress={() => {
-                      setNewPostCategory(category);
-                      setNewPostIntent(getDefaultIntent(category));
-                    }}
-                  >
-                    <Text
-                      className={`font-medium ${
-                        newPostCategory === category ? "text-slate-900" : "text-slate-300"
-                      }`}
-                    >
-                      {category}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            <View className="mb-4">
-              <Text className="text-slate-300 mb-2">Offering or Seeking</Text>
-              <View className="flex-row gap-2">
-                {(["seeking", "offering"] as PostIntent[]).map((intent) => (
-                  <TouchableOpacity
-                    key={intent}
-                    className={`px-4 py-2 rounded-full ${
-                      newPostIntent === intent ? "bg-emerald-500" : "border border-slate-700"
-                    }`}
-                    onPress={() => setNewPostIntent(intent)}
-                  >
-                    <Text
-                      className={`font-medium ${
-                        newPostIntent === intent ? "text-slate-900" : "text-slate-300"
-                      }`}
-                    >
-                      {getIntentLabel(newPostCategory, intent)}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            <View className="mb-6">
-              <Text className="text-slate-300 mb-2">Details</Text>
-              <TextInput
-                className="bg-slate-800 text-white rounded-xl p-4 h-32 text-base"
-                placeholder="Describe what you're offering or seeking..."
-                placeholderTextColor="#94a3b8"
-                multiline
-                value={newPostContent}
-                onChangeText={setNewPostContent}
-              />
-            </View>
-
-              <View className="flex-row gap-3">
-                <TouchableOpacity
-                  className="flex-1 bg-slate-800 py-3 rounded-full"
-                  onPress={() => setIsPostModalVisible(false)}
-                >
-                  <Text className="text-white text-center font-bold">Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  className="flex-1 bg-emerald-500 py-3 rounded-full"
-                  onPress={handlePostSubmit}
-                >
-                  <Text className="text-slate-900 text-center font-bold">Post</Text>
-                </TouchableOpacity>
-              </View>
-          </KeyboardAwareScrollView>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      <Modal
-        visible={postMenuVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setPostMenuVisible(false)}
+      {/* Edit Post Bottom Sheet */}
+      <StandardBottomSheet
+        ref={editPostSheetRef}
+        title="Edit Post"
+        snapPoints={['60%', '85%']}
+        onClose={() => setActivePost(null)}
       >
-        <KeyboardAvoidingView
-          className="flex-1"
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          keyboardVerticalOffset={0}
-        >
-          <Pressable className="flex-1 bg-black/70" onPress={() => setPostMenuVisible(false)} />
-          <KeyboardAwareScrollView
-            style={{ backgroundColor: '#0f172a', borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '80%' }}
-            contentContainerStyle={{ padding: 24 }}
-            keyboardShouldPersistTaps="handled"
-            bottomOffset={40}
+        <View style={{ marginBottom: 16 }}>
+          <Text style={{ color: '#CBD5E1', marginBottom: 8 }}>Category</Text>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {(["Carpool", "Pacer", "Crew"] as PostType[]).map((category) => (
+              <TouchableOpacity
+                key={category}
+                style={{
+                  paddingHorizontal: 16,
+                  paddingVertical: 8,
+                  borderRadius: 20,
+                  backgroundColor: editCategory === category ? '#10B981' : 'transparent',
+                  borderWidth: editCategory === category ? 0 : 1,
+                  borderColor: '#334155',
+                }}
+                onPress={() => {
+                  setEditCategory(category);
+                  setEditIntent(getDefaultIntent(category));
+                }}
+              >
+                <Text
+                  style={{
+                    fontWeight: '500',
+                    color: editCategory === category ? '#0F172A' : '#CBD5E1',
+                  }}
+                >
+                  {category}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        <View style={{ marginBottom: 16 }}>
+          <Text style={{ color: '#CBD5E1', marginBottom: 8 }}>Offering or Seeking</Text>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {(["seeking", "offering"] as PostIntent[]).map((intent) => (
+              <TouchableOpacity
+                key={intent}
+                style={{
+                  paddingHorizontal: 16,
+                  paddingVertical: 8,
+                  borderRadius: 20,
+                  backgroundColor: editIntent === intent ? '#10B981' : 'transparent',
+                  borderWidth: editIntent === intent ? 0 : 1,
+                  borderColor: '#334155',
+                }}
+                onPress={() => setEditIntent(intent)}
+              >
+                <Text
+                  style={{
+                    fontWeight: '500',
+                    color: editIntent === intent ? '#0F172A' : '#CBD5E1',
+                  }}
+                >
+                  {getIntentLabel(editCategory, intent)}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        <View style={{ marginBottom: 24 }}>
+          <Text style={{ color: '#CBD5E1', marginBottom: 8 }}>Details</Text>
+          <BottomSheetTextInput
+            style={{
+              backgroundColor: 'rgba(15, 23, 42, 0.6)',
+              borderRadius: 12,
+              padding: 16,
+              color: '#FFFFFF',
+              fontSize: 16,
+              height: 128,
+              borderWidth: 1,
+              borderColor: 'rgba(71, 85, 105, 0.5)',
+              textAlignVertical: 'top',
+            }}
+            placeholder="Update your post..."
+            placeholderTextColor="#94a3b8"
+            selectionColor="#10B981"
+            multiline
+            value={editContent}
+            onChangeText={setEditContent}
+            onFocus={() => requestAnimationFrame(() => editPostSheetRef.current?.expand())}
+          />
+        </View>
+
+        <View style={{ flexDirection: 'row', gap: 12 }}>
+          <TouchableOpacity
+            style={{ flex: 1, backgroundColor: '#1E293B', paddingVertical: 12, borderRadius: 20, alignItems: 'center' }}
+            onPress={() => editPostSheetRef.current?.close()}
           >
-              <Text className="text-white text-xl font-bold mb-4">Edit Post</Text>
-
-            <View className="mb-4">
-              <Text className="text-slate-300 mb-2">Category</Text>
-              <View className="flex-row gap-2">
-                {(["Carpool", "Pacer", "Crew"] as PostType[]).map((category) => (
-                  <TouchableOpacity
-                    key={category}
-                    className={`px-4 py-2 rounded-full ${
-                      editCategory === category ? "bg-emerald-500" : "border border-slate-700"
-                    }`}
-                    onPress={() => {
-                      setEditCategory(category);
-                      setEditIntent(getDefaultIntent(category));
-                    }}
-                  >
-                    <Text
-                      className={`font-medium ${
-                        editCategory === category ? "text-slate-900" : "text-slate-300"
-                      }`}
-                    >
-                      {category}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            <View className="mb-4">
-              <Text className="text-slate-300 mb-2">Offering or Seeking</Text>
-              <View className="flex-row gap-2">
-                {(["seeking", "offering"] as PostIntent[]).map((intent) => (
-                  <TouchableOpacity
-                    key={intent}
-                    className={`px-4 py-2 rounded-full ${
-                      editIntent === intent ? "bg-emerald-500" : "border border-slate-700"
-                    }`}
-                    onPress={() => setEditIntent(intent)}
-                  >
-                    <Text
-                      className={`font-medium ${
-                        editIntent === intent ? "text-slate-900" : "text-slate-300"
-                      }`}
-                    >
-                      {getIntentLabel(editCategory, intent)}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            <View className="mb-6">
-              <Text className="text-slate-300 mb-2">Details</Text>
-              <TextInput
-                className="bg-slate-800 text-white rounded-xl p-4 h-32 text-base"
-                placeholder="Update your post..."
-                placeholderTextColor="#94a3b8"
-                multiline
-                value={editContent}
-                onChangeText={setEditContent}
-              />
-            </View>
-
-              <View className="flex-row gap-3">
-                <TouchableOpacity
-                  className="flex-1 bg-slate-800 py-3 rounded-full"
-                  onPress={() => setPostMenuVisible(false)}
-                >
-                  <Text className="text-white text-center font-bold">Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  className="flex-1 bg-red-500/80 py-3 rounded-full"
-                  onPress={handleDeletePost}
-                >
-                  <Text className="text-white text-center font-bold">Delete</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  className="flex-1 bg-emerald-500 py-3 rounded-full"
-                  onPress={handleUpdatePost}
-                >
-                  <Text className="text-slate-900 text-center font-bold">Save</Text>
-                </TouchableOpacity>
-              </View>
-          </KeyboardAwareScrollView>
-        </KeyboardAvoidingView>
-      </Modal>
+            <Text style={{ color: '#FFFFFF', fontWeight: '700' }}>Cancel</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={{ flex: 1, backgroundColor: 'rgba(239, 68, 68, 0.8)', paddingVertical: 12, borderRadius: 20, alignItems: 'center' }}
+            onPress={handleDeletePost}
+          >
+            <Text style={{ color: '#FFFFFF', fontWeight: '700' }}>Delete</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={{ flex: 1, backgroundColor: '#10B981', paddingVertical: 12, borderRadius: 20, alignItems: 'center' }}
+            onPress={handleUpdatePost}
+          >
+            <Text style={{ color: '#0F172A', fontWeight: '700' }}>Save</Text>
+          </TouchableOpacity>
+        </View>
+      </StandardBottomSheet>
     </SafeAreaView>
   );
 }

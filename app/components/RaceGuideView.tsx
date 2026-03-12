@@ -83,7 +83,18 @@ export default function RaceGuideView({ race, guide }: RaceGuideViewProps) {
     fallbackImage;
 
   // Per-distance array (new) with legacy fallback
-  const distancesArr: any[] = Array.isArray(race?.distances) ? race.distances : [];
+  // Filter out junk labels and deduplicate
+  const JUNK_LABELS = new Set(['ignore', 'volunteer', 'donation', 'spectator', 'crew', 'virtual', 'n/a', 'none', 'test', 'placeholder', 'other', 'misc']);
+  const rawDistancesArr: any[] = Array.isArray(race?.distances) ? race.distances : [];
+  const distancesArr: any[] = [];
+  const seenDistLabels = new Set<string>();
+  for (const d of rawDistancesArr) {
+    const key = (d.label || d.raceTitle || '').toLowerCase().trim();
+    if (!key || JUNK_LABELS.has(key)) continue;
+    if (seenDistLabels.has(key)) continue;
+    seenDistLabels.add(key);
+    distancesArr.push(d);
+  }
   const hasMultipleDistances = distancesArr.length > 1;
 
   // Distance tab state
@@ -99,12 +110,12 @@ export default function RaceGuideView({ race, guide }: RaceGuideViewProps) {
         ? [race.distance]
         : [];
 
-  // Per-distance values with event-level + guide fallbacks
-  const elevation = selectedDist?.elevationGain || race?.elevationGain || race?.elevation || "TBD";
-  const cutoff = selectedDist?.cutoffTime || race?.cutoffTime || "TBD";
-  const startTime = selectedDist?.startTime || race?.startTime || guide?.essentials?.startTimeInfo || "TBD";
-  const capacity = selectedDist?.capacity ? String(selectedDist.capacity) : race?.capacity ? String(race.capacity) : "TBD";
-  const aidCount = selectedDist?.aidStations ?? race?.aidStations ?? guide?.aidStations?.length ?? "TBD";
+  // Per-distance values with event-level + guide fallbacks (empty string if not available)
+  const elevation = selectedDist?.elevationGain || race?.elevationGain || race?.elevation || "";
+  const cutoff = selectedDist?.cutoffTime || race?.cutoffTime || "";
+  const startTime = selectedDist?.startTime || race?.startTime || guide?.essentials?.startTimeInfo || "";
+  const capacity = selectedDist?.capacity ? String(selectedDist.capacity) : race?.capacity ? String(race.capacity) : "";
+  const aidCount = selectedDist?.aidStations ?? race?.aidStations ?? guide?.aidStations?.length ?? "";
 
   // Per-distance guide fields with guide-object and race-level fallbacks
   const mandatoryGear = selectedDist?.mandatoryGear || guide?.essentials?.mandatoryGear || race?.mandatoryGear || "";
@@ -172,13 +183,13 @@ export default function RaceGuideView({ race, guide }: RaceGuideViewProps) {
           </Text>
           <View className="flex-row flex-wrap">
             {[
-              { label: "Distance", value: selectedDist?.label || distanceLabels.join(", ") || "TBD" },
+              { label: "Distance", value: selectedDist?.label || distanceLabels.join(", ") || "" },
               { label: "Elevation", value: String(elevation) },
               { label: "Start Time", value: String(startTime) },
               { label: "Cutoff", value: String(cutoff) },
               { label: "Capacity", value: String(capacity) },
               { label: "Aid Stations", value: String(aidCount) },
-            ].map((item) => (
+            ].filter((item) => item.value && item.value.trim() !== "" && item.value !== "0").map((item) => (
               <View key={item.label} className="w-1/2 p-2">
                 <View className="bg-slate-900/70 rounded-xl p-4 border border-emerald-500/20">
                   <Text className="text-slate-400 text-xs uppercase tracking-wider">{item.label}</Text>

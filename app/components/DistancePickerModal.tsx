@@ -1,6 +1,7 @@
-import { Route, X } from 'lucide-react-native';
-import React from 'react';
-import { Modal, Text, TouchableOpacity, View } from 'react-native';
+import React, { forwardRef, useCallback, useRef } from 'react';
+import { Text, TouchableOpacity, View } from 'react-native';
+import { Route } from 'lucide-react-native';
+import StandardBottomSheet, { StandardBottomSheetHandle } from './StandardBottomSheet';
 
 export interface DistanceOption {
   label: string;
@@ -9,76 +10,104 @@ export interface DistanceOption {
   elevationGain?: string;
 }
 
+/* ── Public handle exposed via ref ──────────────────────────────────── */
+export interface DistancePickerModalHandle {
+  present: () => void;
+  close: () => void;
+}
+
 interface DistancePickerModalProps {
-  visible: boolean;
-  onClose: () => void;
+  onClose?: () => void;
   onSelect: (distance: DistanceOption) => void;
   distances: DistanceOption[];
   raceName: string;
 }
 
-export default function DistancePickerModal({
-  visible,
-  onClose,
-  onSelect,
-  distances,
-  raceName,
-}: DistancePickerModalProps) {
-  return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      transparent={true}
-      onRequestClose={onClose}
-    >
-      <View className="flex-1 justify-end bg-black/60">
-        <View className="bg-slate-900 rounded-t-3xl px-6 pt-6 pb-10">
-          {/* Header */}
-          <View className="flex-row justify-between items-center mb-2">
-            <Text className="text-white text-xl font-bold flex-1 mr-4" numberOfLines={1}>
-              Select a Distance
-            </Text>
-            <TouchableOpacity onPress={onClose} hitSlop={12}>
-              <X size={22} color="#94a3b8" />
-            </TouchableOpacity>
-          </View>
-          <Text className="text-slate-400 text-sm mb-6">{raceName}</Text>
+const DistancePickerModal = forwardRef<DistancePickerModalHandle, DistancePickerModalProps>(
+  ({ onClose, onSelect, distances, raceName }, ref) => {
+    const sheetRef = useRef<StandardBottomSheetHandle>(null);
 
-          {/* Distance Options */}
-          {distances.map((d, i) => {
-            const price = typeof d.price === 'number' && d.price > 0 ? d.price : null;
-            return (
-              <TouchableOpacity
-                key={i}
-                onPress={() => onSelect(d)}
-                className="bg-slate-800 rounded-2xl p-4 mb-3 border border-slate-700 active:border-emerald-500"
-                activeOpacity={0.7}
-              >
-                <View className="flex-row items-center justify-between">
-                  <View className="flex-row items-center flex-1">
-                    <View className="bg-emerald-500/20 rounded-full p-2 mr-3">
-                      <Route size={20} color="#10b981" />
-                    </View>
-                    <View className="flex-1">
-                      <Text className="text-white text-lg font-bold">{d.label}</Text>
-                      {(d.elevationGain || d.startTime) && (
-                        <Text className="text-slate-400 text-xs mt-0.5">
-                          {[d.elevationGain ? `${d.elevationGain} gain` : '', d.startTime ? `Starts ${d.startTime}` : ''].filter(Boolean).join(' · ')}
-                        </Text>
-                      )}
-                    </View>
+    // Expose present / close to parent via ref
+    React.useImperativeHandle(ref, () => ({
+      present: () => {
+        sheetRef.current?.present();
+      },
+      close: () => {
+        sheetRef.current?.close();
+      },
+    }));
+
+    const handleClose = useCallback(() => {
+      onClose?.();
+    }, [onClose]);
+
+    const handleSelect = (d: DistanceOption) => {
+      onSelect(d);
+      sheetRef.current?.close();
+    };
+
+    return (
+      <StandardBottomSheet
+        ref={sheetRef}
+        title="Select a Distance"
+        snapPoints={['45%', '75%']}
+        onClose={handleClose}
+      >
+        <Text style={{ color: '#94A3B8', fontSize: 14, marginBottom: 20 }}>{raceName}</Text>
+
+        {/* Distance Options */}
+        {distances.map((d, i) => {
+          const price = typeof d.price === 'number' && d.price > 0 ? d.price : null;
+          return (
+            <TouchableOpacity
+              key={i}
+              onPress={() => handleSelect(d)}
+              style={{
+                backgroundColor: '#0F172A',
+                borderRadius: 16,
+                padding: 16,
+                marginBottom: 12,
+                borderWidth: 1,
+                borderColor: '#334155',
+              }}
+              activeOpacity={0.7}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                  <View
+                    style={{
+                      backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                      borderRadius: 20,
+                      padding: 8,
+                      marginRight: 12,
+                    }}
+                  >
+                    <Route size={20} color="#10b981" />
                   </View>
-                  {price !== null && (
-                    <Text className="text-emerald-400 text-lg font-bold ml-3">
-                      ${price.toFixed(2)}
-                    </Text>
-                  )}
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '700' }}>{d.label}</Text>
+                    {(d.elevationGain || d.startTime) && (
+                      <Text style={{ color: '#94A3B8', fontSize: 12, marginTop: 2 }}>
+                        {[d.elevationGain ? `${d.elevationGain} gain` : '', d.startTime ? `Starts ${d.startTime}` : '']
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </Text>
+                    )}
+                  </View>
                 </View>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      </View>
-    </Modal>
-  );
-}
+                {price !== null && (
+                  <Text style={{ color: '#34D399', fontSize: 18, fontWeight: '700', marginLeft: 12 }}>
+                    ${price.toFixed(2)}
+                  </Text>
+                )}
+              </View>
+            </TouchableOpacity>
+          );
+        })}
+      </StandardBottomSheet>
+    );
+  }
+);
+
+DistancePickerModal.displayName = 'DistancePickerModal';
+export default DistancePickerModal;

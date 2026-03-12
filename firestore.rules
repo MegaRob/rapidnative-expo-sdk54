@@ -4,7 +4,8 @@ service cloud.firestore {
 
     function isAdmin() {
       return request.auth != null &&
-        (request.auth.uid == 'gveHJNWFRgZKj0qz8ZOJuT976j13');
+        (request.auth.uid == 'gveHJNWFRgZKj0qz8ZOJuT976j13' ||
+         request.auth.uid == '8NiPVZNU8rUNvGJSguygXIx7dLv2');
     }
 
     function isDirector(trailId) {
@@ -120,10 +121,10 @@ service cloud.firestore {
       allow create: if true;
       
       // Only allow authenticated admins to read requests
-      allow read: if request.auth != null && request.auth.uid == 'gveHJNWFRgZKj0qz8ZOJuT976j13';
+      allow read: if isAdmin();
       
       // Only allow authenticated admins to update requests (for approval/rejection)
-      allow update: if request.auth != null && request.auth.uid == 'gveHJNWFRgZKj0qz8ZOJuT976j13';
+      allow update: if isAdmin();
       
       // No one can delete requests (keep for audit trail)
       allow delete: if false;
@@ -167,10 +168,10 @@ service cloud.firestore {
         request.auth.uid == request.resource.data.reporterId;
       
       // Only allow admins to read reports
-      allow read: if request.auth != null && request.auth.uid == 'gveHJNWFRgZKj0qz8ZOJuT976j13';
+      allow read: if isAdmin();
       
       // Only allow admins to update report status
-      allow update: if request.auth != null && request.auth.uid == 'gveHJNWFRgZKj0qz8ZOJuT976j13';
+      allow update: if isAdmin();
       
       // No one can delete reports (keep for audit trail)
       allow delete: if false;

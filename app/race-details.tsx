@@ -3,17 +3,17 @@ import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
 import { ArrowLeft, Calendar, Clock, Heart, Mountain, Share2, Star } from 'lucide-react-native';
 import { cssInterop } from 'nativewind';
-import React, { useEffect, useState } from 'react';
-import { Alert, AppState, Dimensions, Image, Linking, Pressable, ScrollView, Share, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Alert, AppState, Dimensions, Image, InteractionManager, Linking, Pressable, ScrollView, Share, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useBlockedUsers } from '../hooks/useBlockedUsers';
 import { auth, db } from '../src/firebaseConfig';
 import ConfettiEffect from './components/ConfettiEffect';
 import FinisherCard from './components/FinisherCard';
 import RegistrationForm from './components/RegistrationForm';
-import ReviewForm from './components/ReviewForm';
+import ReviewForm, { ReviewFormHandle } from './components/ReviewForm';
 import StarRating from './components/StarRating';
-import UserProfileModal from './components/UserProfileModal';
+import UserProfileModal, { UserProfileModalHandle } from './components/UserProfileModal';
 
 // Enable className support for LinearGradient
 cssInterop(LinearGradient, {
@@ -39,7 +39,7 @@ export default function RaceDetailsScreen() {
   const [isSaved, setIsSaved] = useState(false);
   const [isRegistered, setIsRegistered] = useState(false);
   const [otherRunners, setOtherRunners] = useState<OtherRunner[]>([]);
-  const [modalVisible, setModalVisible] = useState(false);
+  const userProfileRef = useRef<UserProfileModalHandle>(null);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [raceData, setRaceData] = useState<any>(null);
   const [isCompleted, setIsCompleted] = useState(false);
@@ -47,12 +47,16 @@ export default function RaceDetailsScreen() {
   const [showConfetti, setShowConfetti] = useState(false);
   const [showRegistrationModal, setShowRegistrationModal] = useState(false);
   const [selectedDistance, setSelectedDistance] = useState<string | undefined>(undefined);
-  const [showReviewForm, setShowReviewForm] = useState(false);
+  const reviewFormRef = useRef<ReviewFormHandle>(null);
   const [showFullNotes, setShowFullNotes] = useState(false);
   const [reviews, setReviews] = useState<any[]>([]);
   const [avgRating, setAvgRating] = useState(0);
   const [reviewCount, setReviewCount] = useState(0);
   const { allBlockedIds } = useBlockedUsers();
+
+  // Keep a ref to the latest Firestore data so button handlers always read fresh data
+  const raceDataRef = useRef<any>(null);
+  useEffect(() => { raceDataRef.current = raceData; }, [raceData]);
 
   // Hide default header
   useEffect(() => {
@@ -64,34 +68,38 @@ export default function RaceDetailsScreen() {
   // Get the raceId from route parameters
   const raceId = Array.isArray(trail.id) ? trail.id[0] : trail.id;
 
-  // Check if race is completed
+  // Check if race is completed — deferred until navigation transition finishes
   useEffect(() => {
-    const checkIfCompleted = async () => {
-      const uid = auth.currentUser?.uid;
-      if (!uid || !raceId) return;
+    if (!raceId) return;
+    const task = InteractionManager.runAfterInteractions(() => {
+      const checkIfCompleted = async () => {
+        const uid = auth.currentUser?.uid;
+        if (!uid) return;
 
-      try {
-        const completedQuery = query(
-          collection(db, 'completed_races'),
-          where('userId', '==', uid),
-          where('trailId', '==', raceId)
-        );
-        const completedSnapshot = await getDocs(completedQuery);
-        
-        if (!completedSnapshot.empty) {
-          const completedDoc = completedSnapshot.docs[0];
-          setCompletedRaceData(completedDoc.data());
-          setIsCompleted(true);
-          // Show confetti on first load
-          setShowConfetti(true);
-          setTimeout(() => setShowConfetti(false), 3000);
+        try {
+          const completedQuery = query(
+            collection(db, 'completed_races'),
+            where('userId', '==', uid),
+            where('trailId', '==', raceId)
+          );
+          const completedSnapshot = await getDocs(completedQuery);
+          
+          if (!completedSnapshot.empty) {
+            const completedDoc = completedSnapshot.docs[0];
+            setCompletedRaceData(completedDoc.data());
+            setIsCompleted(true);
+            // Show confetti on first load
+            setShowConfetti(true);
+            setTimeout(() => setShowConfetti(false), 3000);
+          }
+        } catch (error) {
+          console.error('Error checking if race is completed:', error);
         }
-      } catch (error) {
-        console.error('Error checking if race is completed:', error);
-      }
-    };
+      };
 
-    checkIfCompleted();
+      checkIfCompleted();
+    });
+    return () => task.cancel();
   }, [raceId]);
 
   // Fetch reviews for this race
@@ -135,28 +143,39 @@ export default function RaceDetailsScreen() {
     }
   };
 
+  // Defer review fetch until after the transition animation completes
   useEffect(() => {
-    fetchReviews();
+    if (!raceId) return;
+    const task = InteractionManager.runAfterInteractions(() => {
+      fetchReviews();
+    });
+    return () => task.cancel();
   }, [raceId]);
 
-  // Fetch race data from Firestore to ensure we have complete data including description
+  // Fetch race data from Firestore — also deferred to avoid transition jank
   useEffect(() => {
     if (!raceId) return;
 
-    const raceDocRef = doc(db, 'trails', raceId);
-    const unsubscribe = onSnapshot(
-      raceDocRef,
-      (raceDoc) => {
-        if (raceDoc.exists()) {
-          setRaceData(raceDoc.data());
+    let unsubscribe: (() => void) | undefined;
+    const task = InteractionManager.runAfterInteractions(() => {
+      const raceDocRef = doc(db, 'trails', raceId);
+      unsubscribe = onSnapshot(
+        raceDocRef,
+        (raceDoc) => {
+          if (raceDoc.exists()) {
+            setRaceData(raceDoc.data());
+          }
+        },
+        (error) => {
+          console.error('Error fetching race data:', error);
         }
-      },
-      (error) => {
-        console.error('Error fetching race data:', error);
-      }
-    );
+      );
+    });
 
-    return () => unsubscribe();
+    return () => {
+      task.cancel();
+      unsubscribe?.();
+    };
   }, [raceId]);
 
   // Check if the race is already saved
@@ -355,7 +374,6 @@ export default function RaceDetailsScreen() {
         matchedTrails: arrayUnion(raceId)
       });
 
-      console.log("Successfully saved match from details page!");
 
       // 3. Hide the button
       setIsSaved(true);
@@ -487,7 +505,18 @@ export default function RaceDetailsScreen() {
   const date = formatDate(raceData_merged?.date);
   
   // Handle per-distance array (new) with fallback to legacy flat fields
-  const distancesArray: any[] = Array.isArray(raceData_merged?.distances) ? raceData_merged.distances : [];
+  // Filter out junk labels and deduplicate by label
+  const JUNK_LABELS = new Set(['ignore', 'volunteer', 'donation', 'spectator', 'crew', 'virtual', 'n/a', 'none', 'test', 'placeholder', 'other', 'misc']);
+  const rawDistances: any[] = Array.isArray(raceData_merged?.distances) ? raceData_merged.distances : [];
+  const distancesArray: any[] = [];
+  const seenLabels = new Set<string>();
+  for (const d of rawDistances) {
+    const key = (d.label || d.raceTitle || '').toLowerCase().trim();
+    if (!key || JUNK_LABELS.has(key)) continue;
+    if (seenLabels.has(key)) continue;
+    seenLabels.add(key);
+    distancesArray.push(d);
+  }
 
   let distancesOffered: string[] = [];
   if (distancesArray.length > 0) {
@@ -504,8 +533,8 @@ export default function RaceDetailsScreen() {
   const hasMultipleDistances = distancesArray.length > 1;
 
   // Per-distance values with event-level fallbacks
-  const distStartTime = selectedDist?.startTime || getParam(raceData_merged?.startTime || raceData_merged?.start_time, 'TBD');
-  const distCutoff = selectedDist?.cutoffTime || getParam(raceData_merged?.cutoffTime, 'TBD');
+  const distStartTime = selectedDist?.startTime || getParam(raceData_merged?.startTime || raceData_merged?.start_time, '');
+  const distCutoff = selectedDist?.cutoffTime || getParam(raceData_merged?.cutoffTime, '');
   const distElevation = selectedDist?.elevationGain || getParam(raceData_merged?.elevation, '0m');
   const distPrice = selectedDist ? (parseFloat(selectedDist.price) || 0) : (Number.isFinite(priceNumber) ? priceNumber : 0);
   const distCapacity = selectedDist?.capacity || raceData_merged?.capacity || '';
@@ -514,7 +543,7 @@ export default function RaceDetailsScreen() {
   const distAidStationsRaw = selectedDist?.aidStations ?? raceData_merged?.aidStations;
   const distAidStations =
     typeof distAidStationsRaw === 'number' ? String(distAidStationsRaw) :
-    typeof distAidStationsRaw === 'string' && distAidStationsRaw.trim().length > 0 ? distAidStationsRaw.trim() : 'TBD';
+    typeof distAidStationsRaw === 'string' && distAidStationsRaw.trim().length > 0 ? distAidStationsRaw.trim() : '';
   const distAidStationDetails = selectedDist?.aidStationDetails || getParam(raceData_merged?.aidStationDetails, '');
   const distMandatoryGear = selectedDist?.mandatoryGear || getParam(raceData_merged?.mandatoryGear, '');
   const distCheckInDetails = getParam(raceData_merged?.checkInDetails, '');
@@ -568,6 +597,7 @@ export default function RaceDetailsScreen() {
               raceImageUrl={imageUrl}
               finishTime={completedRaceData?.finishTime}
               rank={completedRaceData?.rank}
+              pace={completedRaceData?.pace}
               isPendingVerification={isPendingVerification}
             />
             
@@ -588,7 +618,7 @@ export default function RaceDetailsScreen() {
         {/* Share My Finish Button + Rate Button */}
         <View className="p-6 pt-0" style={{ gap: 10 }}>
           <TouchableOpacity
-            onPress={() => setShowReviewForm(true)}
+            onPress={() => reviewFormRef.current?.present()}
             style={{
               backgroundColor: '#1E293B',
               borderWidth: 1.5,
@@ -620,10 +650,9 @@ export default function RaceDetailsScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Review Form Modal (completed race view) */}
+        {/* Review Form Bottom Sheet (completed race view) */}
         <ReviewForm
-          visible={showReviewForm}
-          onClose={() => setShowReviewForm(false)}
+          ref={reviewFormRef}
           trailId={raceId || ''}
           raceName={name}
           onReviewSubmitted={fetchReviews}
@@ -746,30 +775,36 @@ export default function RaceDetailsScreen() {
             </View>
           </View>
 
-          {/* Race Day Essentials */}
-          <View className="bg-[#2C3440] p-4 rounded-2xl mb-6">
-            <Text className="text-white text-xl font-bold mb-3">Race Day Essentials</Text>
-            <View className="flex-row items-center mb-2">
-              <Clock size={18} color="#8BC34A" />
-              <Text className="text-white ml-3">Start Time: {distStartTime}</Text>
+          {/* Race Day Essentials — only show if there's at least one real value */}
+          {(distStartTime || distCutoff || distCheckInDetails || distMandatoryGear) ? (
+            <View className="bg-[#2C3440] p-4 rounded-2xl mb-6">
+              <Text className="text-white text-xl font-bold mb-3">Race Day Essentials</Text>
+              {distStartTime ? (
+                <View className="flex-row items-center mb-2">
+                  <Clock size={18} color="#8BC34A" />
+                  <Text className="text-white ml-3">Start Time: {distStartTime}</Text>
+                </View>
+              ) : null}
+              {distCutoff ? (
+                <View className="flex-row items-center mb-2">
+                  <Clock size={18} color="#8BC34A" />
+                  <Text className="text-white ml-3">Cutoff: {distCutoff}</Text>
+                </View>
+              ) : null}
+              {distCheckInDetails ? (
+                <View className="mt-3">
+                  <Text className="text-gray-400 text-xs mb-1">Check-In</Text>
+                  <Text className="text-white text-sm">{distCheckInDetails}</Text>
+                </View>
+              ) : null}
+              {distMandatoryGear ? (
+                <View className="mt-3">
+                  <Text className="text-gray-400 text-xs mb-1">Mandatory Gear</Text>
+                  <Text className="text-white text-sm">{distMandatoryGear}</Text>
+                </View>
+              ) : null}
             </View>
-            <View className="flex-row items-center mb-2">
-              <Clock size={18} color="#8BC34A" />
-              <Text className="text-white ml-3">Cutoff: {distCutoff}</Text>
-            </View>
-            {distCheckInDetails ? (
-              <View className="mt-3">
-                <Text className="text-gray-400 text-xs mb-1">Check-In</Text>
-                <Text className="text-white text-sm">{distCheckInDetails}</Text>
-              </View>
-            ) : null}
-            {distMandatoryGear ? (
-              <View className="mt-3">
-                <Text className="text-gray-400 text-xs mb-1">Mandatory Gear</Text>
-                <Text className="text-white text-sm">{distMandatoryGear}</Text>
-              </View>
-            ) : null}
-          </View>
+          ) : null}
 
           {/* Course Profile — only show if there's real data */}
           {(distElevation && distElevation !== '0m') ||
@@ -814,12 +849,12 @@ export default function RaceDetailsScreen() {
           ) : null}
 
           {/* Aid Stations — only show if there's real data */}
-          {distAidStations !== 'TBD' || distAidStationDetails ? (
+          {distAidStations || distAidStationDetails ? (
             <View className="bg-[#2C3440] p-4 rounded-2xl mb-6">
               <Text className="text-white text-xl font-bold mb-3">Aid Stations</Text>
-              {distAidStations !== 'TBD' && (
+              {distAidStations ? (
                 <Text className="text-emerald-400 text-sm font-semibold mb-2">{distAidStations} stations</Text>
-              )}
+              ) : null}
               {distAidStationDetails ? (
                 <Text className="text-white text-sm">{distAidStationDetails}</Text>
               ) : null}
@@ -964,7 +999,7 @@ export default function RaceDetailsScreen() {
                       key={runner.userId}
                       onPress={() => {
                         setSelectedUserId(runner.userId);
-                        setModalVisible(true);
+                        userProfileRef.current?.present();
                       }}
                       className="mr-3 items-center"
                     >
@@ -1121,7 +1156,7 @@ export default function RaceDetailsScreen() {
             {/* Write/Edit review button (only if user completed this race) */}
             {isCompleted && (
               <TouchableOpacity
-                onPress={() => setShowReviewForm(true)}
+                onPress={() => reviewFormRef.current?.present()}
                 style={{
                   marginTop: 8,
                   paddingVertical: 12,
@@ -1163,156 +1198,131 @@ export default function RaceDetailsScreen() {
       {/* Action Buttons */}
       <View className="p-6 pt-0">
         {/* Registration Button */}
-        {!isRegistered && raceData_merged?.source === 'runsignup' && raceData_merged?.runsignupUrl ? (
-          /* External race — open RunSignup in browser, then confirm when user returns */
+        {!isRegistered && (
           <TouchableOpacity
             onPress={() => {
-              const saveExternalRegistration = async (source: string) => {
-                try {
-                  const uid = auth.currentUser?.uid;
-                  if (!uid || !raceId) return;
-                  const regRef = doc(collection(db, 'registrations'));
-                  await setDoc(regRef, {
-                    userId: uid,
-                    trailId: raceId,
-                    registeredAt: Timestamp.now(),
-                    registrationType: 'external',
-                    source,
-                    distance: selectedDistance || raceData_merged?.distance || '',
-                  });
-                  // Remove from matches (move from Liked → Registered)
-                  const matchesQuery = query(
-                    collection(db, 'matches'),
-                    where('userId', '==', uid),
-                    where('trailId', '==', raceId)
-                  );
-                  const matchesSnap = await getDocs(matchesQuery);
-                  for (const mDoc of matchesSnap.docs) {
-                    await deleteDoc(mDoc.ref);
+              // Always read the LATEST Firestore data via ref
+              const freshData = raceDataRef.current || raceData_merged;
+              const source = freshData?.source || '';
+
+              // ─── External race (runsignup / ultrasignup) → open browser ───
+              const isExternal =
+                source === 'runsignup' || source === 'ultrasignup' ||
+                freshData?.runsignupUrl || freshData?.runsignupRaceId ||
+                freshData?.ultrasignupUrl || freshData?.ultrasignupEventId;
+
+              if (isExternal) {
+                let externalUrl = '';
+                let sourceName = '';
+
+                if (source === 'runsignup' || freshData?.runsignupUrl || freshData?.runsignupRaceId) {
+                  sourceName = 'RunSignup';
+                  externalUrl =
+                    (freshData?.runsignupUrl && freshData.runsignupUrl.startsWith('http') ? freshData.runsignupUrl : '') ||
+                    (freshData?.runsignupRaceId ? `https://runsignup.com/Race/${freshData.runsignupRaceId}` : '') ||
+                    (freshData?.website && freshData.website.startsWith('http') ? freshData.website : '');
+                } else if (source === 'ultrasignup' || freshData?.ultrasignupUrl || freshData?.ultrasignupEventId) {
+                  sourceName = 'UltraSignup';
+                  externalUrl =
+                    (freshData?.ultrasignupUrl && freshData.ultrasignupUrl.startsWith('http') ? freshData.ultrasignupUrl : '') ||
+                    (freshData?.ultrasignupDateId ? `https://ultrasignup.com/register.aspx?did=${freshData.ultrasignupDateId}` : '') ||
+                    (freshData?.ultrasignupEventId ? `https://ultrasignup.com/register.aspx?eid=${freshData.ultrasignupEventId}` : '') ||
+                    (freshData?.website && freshData.website.startsWith('http') ? freshData.website : '');
+                }
+
+                if (!externalUrl) {
+                  Alert.alert('Error', 'Could not find the registration URL for this race.');
+                  return;
+                }
+
+                const saveExternalRegistration = async () => {
+                  try {
+                    const uid = auth.currentUser?.uid;
+                    if (!uid || !raceId) return;
+                    const regRef = doc(collection(db, 'registrations'));
+                    await setDoc(regRef, {
+                      userId: uid,
+                      trailId: raceId,
+                      registeredAt: Timestamp.now(),
+                      registrationType: 'external',
+                      source: source || sourceName,
+                      distance: selectedDistance || freshData?.distance || '',
+                    });
+                    const mQuery = query(
+                      collection(db, 'matches'),
+                      where('userId', '==', auth.currentUser?.uid),
+                      where('trailId', '==', raceId)
+                    );
+                    const matchesSnap = await getDocs(mQuery);
+                    for (const mDoc of matchesSnap.docs) {
+                      await deleteDoc(mDoc.ref);
+                    }
+                    Alert.alert('Congratulations', 'Congratulations on registering for the race. We wish you the best of luck and have a blast!');
+                  } catch (err) {
+                    console.error('Error saving external registration:', err);
+                    Alert.alert('Error', 'Could not save your registration. Please try again.');
                   }
-                  Alert.alert('🎉 Registered!', 'This race is now in your Registered tab.');
-                } catch (err) {
-                  console.error('Error saving external registration:', err);
-                  Alert.alert('Error', 'Could not save your registration. Please try again.');
-                }
-              };
+                };
 
-              // Listen for app returning to foreground after browser redirect
-              const subscription = AppState.addEventListener('change', (nextAppState) => {
-                if (nextAppState === 'active') {
-                  subscription.remove();
-                  Alert.alert(
-                    'Registration Complete?',
-                    'Did you complete your registration on RunSignup?',
-                    [
-                      { text: 'Not Yet', style: 'cancel' },
-                      { text: 'Yes, I Registered!', onPress: () => saveExternalRegistration('runsignup') },
-                    ]
-                  );
-                }
-              });
-
-              Linking.openURL(raceData_merged.runsignupUrl);
-            }}
-            className="bg-orange-500 py-4 rounded-2xl items-center mb-3"
-            activeOpacity={0.8}
-          >
-            <Text className="text-white text-lg font-bold">
-              Register on RunSignup →
-            </Text>
-          </TouchableOpacity>
-        ) : !isRegistered && raceData_merged?.source === 'ultrasignup' && raceData_merged?.ultrasignupUrl ? (
-          /* External race — open UltraSignup in browser, then confirm when user returns */
-          <TouchableOpacity
-            onPress={() => {
-              const saveExternalRegistration = async (source: string) => {
-                try {
-                  const uid = auth.currentUser?.uid;
-                  if (!uid || !raceId) return;
-                  const regRef = doc(collection(db, 'registrations'));
-                  await setDoc(regRef, {
-                    userId: uid,
-                    trailId: raceId,
-                    registeredAt: Timestamp.now(),
-                    registrationType: 'external',
-                    source,
-                    distance: selectedDistance || raceData_merged?.distance || '',
-                  });
-                  // Remove from matches (move from Liked → Registered)
-                  const matchesQuery = query(
-                    collection(db, 'matches'),
-                    where('userId', '==', uid),
-                    where('trailId', '==', raceId)
-                  );
-                  const matchesSnap = await getDocs(matchesQuery);
-                  for (const mDoc of matchesSnap.docs) {
-                    await deleteDoc(mDoc.ref);
+                // Listen for app returning to foreground after browser redirect
+                const subscription = AppState.addEventListener('change', (nextAppState) => {
+                  if (nextAppState === 'active') {
+                    subscription.remove();
+                    Alert.alert(
+                      'Registration Complete?',
+                      `Did you complete your registration on ${sourceName}?`,
+                      [
+                        { text: 'Not Yet', style: 'cancel' },
+                        { text: 'Yes, I Registered!', onPress: saveExternalRegistration },
+                      ]
+                    );
                   }
-                  Alert.alert('🎉 Registered!', 'This race is now in your Registered tab.');
-                } catch (err) {
-                  console.error('Error saving external registration:', err);
-                  Alert.alert('Error', 'Could not save your registration. Please try again.');
-                }
-              };
+                });
 
-              // Listen for app returning to foreground after browser redirect
-              const subscription = AppState.addEventListener('change', (nextAppState) => {
-                if (nextAppState === 'active') {
+                Linking.openURL(externalUrl).catch((err) => {
+                  console.error(`Failed to open ${sourceName} URL:`, err);
                   subscription.remove();
-                  Alert.alert(
-                    'Registration Complete?',
-                    'Did you complete your registration on UltraSignup?',
-                    [
-                      { text: 'Not Yet', style: 'cancel' },
-                      { text: 'Yes, I Registered!', onPress: () => saveExternalRegistration('ultrasignup') },
-                    ]
-                  );
-                }
-              });
+                  Alert.alert('Error', `Could not open: ${externalUrl}`);
+                });
+                return;
+              }
 
-              Linking.openURL(raceData_merged.ultrasignupUrl);
-            }}
-            className="bg-purple-500 py-4 rounded-2xl items-center mb-3"
-            activeOpacity={0.8}
-          >
-            <Text className="text-white text-lg font-bold">
-              Register on UltraSignup →
-            </Text>
-          </TouchableOpacity>
-        ) : !isRegistered && (
-          /* Native race — in-app Stripe registration */
-          <TouchableOpacity
-            onPress={() => {
-              const distance = selectedDistance || distancesOffered[0] || raceData_merged?.distance;
-              const selectedDistObj = distancesArray.find((d: any) => d.label === distance);
-              const displayTitle = selectedDistObj?.raceTitle || '';
-              const displayDist = displayTitle
-                ? `${displayTitle} (${distance})`
-                : distance || 'this race';
-              const priceText = distPrice > 0 ? ` for $${distPrice.toFixed(2)}` : '';
-
-              Alert.alert(
-                'Confirm Registration',
-                `You're registering for ${displayDist}${priceText}. Is this correct?`,
-                [
-                  { text: 'Change', style: 'cancel' },
-                  {
-                    text: 'Continue',
+              // ─── Native race → in-app registration form ───
+              const distancesArr = Array.isArray(freshData?.distances) ? freshData.distances : [];
+              if (distancesArr.length > 1) {
+                // Multiple distances — show distance picker first
+                setShowRegistrationModal(false);
+                Alert.alert(
+                  'Select Distance',
+                  'Choose your race distance:',
+                  distancesArr.map((d: any) => ({
+                    text: d.label || d.raceTitle || 'Unknown',
                     onPress: () => {
-                      setSelectedDistance(distance);
+                      setSelectedDistance(d.label);
                       setShowRegistrationModal(true);
                     },
-                  },
-                ]
-              );
+                  }))
+                );
+              } else {
+                // Single distance — go straight to registration form
+                const dist = distancesArr[0]?.label || freshData?.distancesOffered?.[0] || freshData?.distance || undefined;
+                setSelectedDistance(dist);
+                setShowRegistrationModal(true);
+              }
             }}
-            className="bg-emerald-500 py-4 rounded-2xl items-center mb-3"
+            className={`${
+              raceData_merged?.source === 'runsignup' ? 'bg-orange-500'
+              : raceData_merged?.source === 'ultrasignup' ? 'bg-purple-500'
+              : 'bg-emerald-500'
+            } py-4 rounded-2xl items-center mb-3`}
             activeOpacity={0.8}
           >
             <Text className="text-white text-lg font-bold">
-              {distPrice > 0
-                ? `Register for $${distPrice.toFixed(2)}`
-                : 'Register for Race'}
+              {raceData_merged?.source === 'runsignup'
+                ? 'Register on RunSignup →'
+                : raceData_merged?.source === 'ultrasignup'
+                  ? 'Register on UltraSignup →'
+                  : 'Register Now'}
             </Text>
           </TouchableOpacity>
         )}
@@ -1333,18 +1343,15 @@ export default function RaceDetailsScreen() {
       </View>
 
       {/* User Profile Modal */}
-      {selectedUserId && (
-        <UserProfileModal
-          visible={modalVisible}
-          onClose={() => {
-            setModalVisible(false);
-            setSelectedUserId(null);
-          }}
-          userId={selectedUserId}
-          trailId={raceId}
-          distance={raceData_merged?.distancesOffered?.[0] || raceData_merged?.distance || undefined}
-        />
-      )}
+      <UserProfileModal
+        ref={userProfileRef}
+        userId={selectedUserId || ''}
+        onClose={() => {
+          setSelectedUserId(null);
+        }}
+        trailId={raceId}
+        distance={raceData_merged?.distancesOffered?.[0] || raceData_merged?.distance || undefined}
+      />
 
       {/* Registration Form Modal - Always render, control via visible prop */}
       <RegistrationForm
@@ -1361,10 +1368,9 @@ export default function RaceDetailsScreen() {
         selectedDistance={selectedDistance}
       />
 
-      {/* Review Form Modal */}
+      {/* Review Form Bottom Sheet */}
       <ReviewForm
-        visible={showReviewForm}
-        onClose={() => setShowReviewForm(false)}
+        ref={reviewFormRef}
         trailId={raceId || ''}
         raceName={name}
         onReviewSubmitted={fetchReviews}

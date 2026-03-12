@@ -1,12 +1,13 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, View, Text, Image } from 'react-native';
-import { Trophy, Clock, Award } from 'lucide-react-native';
+import { Trophy, Clock, Award, Gauge } from 'lucide-react-native';
 
 interface FinisherCardProps {
   raceName: string;
   raceImageUrl: string;
   finishTime?: string;
   rank?: string;
+  pace?: string;
   isPendingVerification?: boolean;
 }
 
@@ -15,6 +16,7 @@ export default function FinisherCard({
   raceImageUrl,
   finishTime,
   rank,
+  pace,
   isPendingVerification = false,
 }: FinisherCardProps) {
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -89,6 +91,15 @@ export default function FinisherCard({
                 </View>
                 <Text className="text-gray-400 text-xs mb-1">Finish Time</Text>
                 <Text className="text-white text-lg font-bold">{finishTime}</Text>
+              </View>
+            )}
+            {pace && (
+              <View className="items-center flex-1 border-l border-slate-700">
+                <View className="mb-2">
+                  <Gauge size={24} color="#10b981" />
+                </View>
+                <Text className="text-gray-400 text-xs mb-1">Pace</Text>
+                <Text className="text-white text-lg font-bold">{pace}</Text>
               </View>
             )}
             {rank && (

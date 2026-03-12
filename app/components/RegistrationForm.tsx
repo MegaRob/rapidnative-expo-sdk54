@@ -13,7 +13,22 @@ import {
 } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { useRouter } from 'expo-router';
-import { useStripe } from '@stripe/stripe-react-native';
+import Constants from 'expo-constants';
+
+// Conditionally import Stripe — not available in Expo Go
+const isExpoGo = Constants.appOwnership === 'expo';
+let useStripe: any;
+if (!isExpoGo) {
+  try {
+    useStripe = require('@stripe/stripe-react-native').useStripe;
+  } catch {
+    // Stripe not available
+  }
+}
+const useStripeSafe = () => {
+  if (useStripe) return useStripe();
+  return { initPaymentSheet: async () => ({ error: { message: 'Stripe not available in Expo Go' } }), presentPaymentSheet: async () => ({ error: { message: 'Stripe not available in Expo Go' } }) };
+};
 import { Check, CreditCard, HeartPulse, ShieldCheck, Shirt, Trophy, User, X } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import {
@@ -25,8 +40,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import KeyboardScreen from './KeyboardScreen';
 import { auth, db, app } from '../../src/firebaseConfig';
 
 // App ID from firebaseConfig
@@ -86,7 +101,7 @@ export default function RegistrationForm({
 }: RegistrationFormProps) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { initPaymentSheet, presentPaymentSheet } = useStripe();
+  const { initPaymentSheet, presentPaymentSheet } = useStripeSafe();
   const functions = getFunctions(app);
   // Resolve race data from either prop name
   const resolvedRace = race || trail;
@@ -567,16 +582,10 @@ export default function RegistrationForm({
               <Trophy size={64} color="#10b981" />
             </View>
             <Text className="text-emerald-500 text-3xl font-bold text-center mb-4">
-              Congratulations!
+              Congratulations
             </Text>
-            <Text className="text-white text-xl text-center mb-2">
-              You're registered for
-            </Text>
-            <Text className="text-emerald-400 text-2xl font-bold text-center mb-8">
-              {raceName}
-            </Text>
-            <Text className="text-gray-400 text-base text-center mb-8">
-              Check your email for confirmation details. We'll see you at the starting line!
+            <Text className="text-white text-base text-center mb-8">
+              Congratulations on registering for the race. We wish you the best of luck and have a blast!
             </Text>
             <TouchableOpacity
               onPress={() => {
@@ -615,7 +624,7 @@ export default function RegistrationForm({
             </TouchableOpacity>
           </View>
 
-          <KeyboardAwareScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bottomOffset={40}>
+          <KeyboardScreen>
             {/* Race Info Summary - Show loading if race data not ready */}
             {!resolvedRace ? (
               <View className="bg-slate-900 mx-6 mt-6 p-4 rounded-2xl items-center">
@@ -872,7 +881,7 @@ export default function RegistrationForm({
                 )}
               </TouchableOpacity>
             </View>
-          </KeyboardAwareScrollView>
+          </KeyboardScreen>
       </SafeAreaView>
     </Modal>
   );

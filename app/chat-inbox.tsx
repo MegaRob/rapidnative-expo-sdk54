@@ -2,7 +2,7 @@ import { useFocusEffect, useNavigation, useRouter } from 'expo-router';
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc, where } from 'firebase/firestore';
 import { ArrowLeft } from 'lucide-react-native';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, Pressable, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, FlatList, Image, InteractionManager, Pressable, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth, db } from '../src/firebaseConfig';
 
@@ -324,32 +324,37 @@ export default function ChatInboxScreen() {
     fetchAllBuddies();
   }, [fetchAllBuddies]);
 
-  // Refresh buddies when screen comes into focus (new messages might have arrived)
+  // Refresh buddies when screen comes into focus (new messages might have arrived).
+  // Deferred until after navigation transition finishes to prevent jank.
   useFocusEffect(
     useCallback(() => {
-      fetchAllBuddies();
+      const task = InteractionManager.runAfterInteractions(() => {
+        fetchAllBuddies();
+      });
+      return () => task.cancel();
     }, [fetchAllBuddies])
   );
 
   // Clear the unread messages flag when the screen is focused
   useFocusEffect(
     useCallback(() => {
-      const clearNotification = async () => {
-        if (auth.currentUser) {
-          const uid = auth.currentUser.uid;
-          const userDocRef = doc(db, 'users', uid);
-          try {
-            // This is for clearing the flag on the CURRENT user
-            await setDoc(userDocRef, {
-              hasUnreadMessages: false
-            }, { merge: true }); 
-          } catch (e) {
-            // Wrap in try-catch just in case the security rule fails
-            console.error("Failed to clear notification flag:", e);
+      const task = InteractionManager.runAfterInteractions(() => {
+        const clearNotification = async () => {
+          if (auth.currentUser) {
+            const uid = auth.currentUser.uid;
+            const userDocRef = doc(db, 'users', uid);
+            try {
+              await setDoc(userDocRef, {
+                hasUnreadMessages: false
+              }, { merge: true }); 
+            } catch (e) {
+              console.error("Failed to clear notification flag:", e);
+            }
           }
-        }
-      };
-      clearNotification();
+        };
+        clearNotification();
+      });
+      return () => task.cancel();
     }, [])
   );
 

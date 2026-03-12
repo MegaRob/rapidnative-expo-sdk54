@@ -6,8 +6,8 @@ import * as ImagePicker from 'expo-image-picker';
 import { ArrowLeft } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import KeyboardScreen from './components/KeyboardScreen';
 import { auth, db, storage } from '../src/firebaseConfig';
 import { getCoordinatesForCity } from '../utils/geolocationUtils';
 
@@ -67,7 +67,7 @@ export default function ProfileEditScreen() {
             // Set profile image from user's photoURL or avatarUrl
             setProfileImageUrl(data.avatarUrl || data.photoURL || user.photoURL || null);
           } else {
-            console.log("No such user document!");
+            // No user document found
           }
         } catch (error) {
           console.error("Error fetching user data: ", error);
@@ -216,11 +216,9 @@ export default function ProfileEditScreen() {
         </TouchableOpacity>
         <Text className="text-2xl font-bold text-white">Edit Profile</Text>
       </View>
-      <KeyboardAwareScrollView
+      <KeyboardScreen
         style={{ flex: 1, backgroundColor: '#2A3038' }}
         contentContainerStyle={{ padding: 20 }}
-        keyboardShouldPersistTaps="handled"
-        bottomOffset={40}
       >
           <View className="bg-gray-800 rounded-3xl p-6">
 
@@ -393,7 +391,7 @@ export default function ProfileEditScreen() {
           )}
         </TouchableOpacity>
           </View>
-      </KeyboardAwareScrollView>
+      </KeyboardScreen>
     </SafeAreaView>
   );
 }

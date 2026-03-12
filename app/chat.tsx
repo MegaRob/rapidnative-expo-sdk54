@@ -22,8 +22,8 @@ import { Bubble, GiftedChat, IMessage } from 'react-native-gifted-chat';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth, db } from '../src/firebaseConfig';
 import { blockUser, isUserBlocked } from '../utils/blockUtils';
-import ReportModal from './components/ReportModal';
-import UserProfileModal from './components/UserProfileModal';
+import ReportModal, { ReportModalHandle } from './components/ReportModal';
+import UserProfileModal, { UserProfileModalHandle } from './components/UserProfileModal';
 
 // Helper to create a unique chat ID
 const getChatId = (uid1: string, uid2: string) => {
@@ -167,14 +167,14 @@ export default function ChatScreen() {
   const [username, setUsername] = useState('User');
   const [buddyAvatarUrl, setBuddyAvatarUrl] = useState<string | null>(null);
   const [inputText, setInputText] = useState('');
-  const [modalVisible, setModalVisible] = useState(false);
+  const userProfileRef = useRef<UserProfileModalHandle>(null);
+  const reportModalRef = useRef<ReportModalHandle>(null);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [derivedBuddyId, setDerivedBuddyId] = useState<string | null>(null);
   const [chatStatus, setChatStatus] = useState<'pending' | 'accepted' | 'declined' | null>(null);
   const [isRequestSender, setIsRequestSender] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
-  const [showReportModal, setShowReportModal] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const lastVisibleDocRef = useRef<QueryDocumentSnapshot | null>(null);
@@ -299,7 +299,7 @@ export default function ChatScreen() {
             }
           } catch (error) {
             // No messages yet, use current time
-            console.log('No messages found, using current time for lastViewedAt');
+            // No messages yet — use current time for lastViewedAt
           }
           
           // Update lastViewedAt for this user
@@ -323,7 +323,7 @@ export default function ChatScreen() {
             hasUnreadMessages: false
           }, { merge: true });
           
-          console.log('Marked chat as viewed');
+          // Marked chat as viewed
         }
       } catch (error: any) {
         // Log but don't fail - notification clearing is secondary
@@ -866,9 +866,8 @@ export default function ChatScreen() {
 
   // Handle avatar tap to open profile modal
   const handleAvatarTap = (userId: string) => {
-    console.log("DEBUG: Avatar tapped for userId:", userId);
     setSelectedUserId(userId);
-    setModalVisible(true);
+    userProfileRef.current?.present();
   };
 
   // Handle blocking a user
@@ -976,7 +975,7 @@ export default function ChatScreen() {
                 return;
               }
               setSelectedUserId(activeBuddyId);
-              setModalVisible(true);
+              userProfileRef.current?.present();
             }}
             style={styles.headerAvatarButton}
           >
@@ -1002,7 +1001,7 @@ export default function ChatScreen() {
             onPress={() => {
               if (!activeBuddyId) return;
               setSelectedUserId(activeBuddyId);
-              setModalVisible(true);
+              userProfileRef.current?.present();
               setShowMenu(false);
             }}
             style={styles.menuItem}
@@ -1011,7 +1010,7 @@ export default function ChatScreen() {
           </Pressable>
           <Pressable
             onPress={() => {
-              setShowReportModal(true);
+              reportModalRef.current?.present();
               setShowMenu(false);
             }}
             style={[styles.menuItem, { borderTopWidth: 1, borderTopColor: '#374151' }]}
@@ -1058,6 +1057,7 @@ export default function ChatScreen() {
               backgroundColor: '#111827',
             }}
             isKeyboardInternallyHandled={false}
+            listViewProps={{ keyboardDismissMode: 'on-drag' }}
           />
           
           {/* Pending Request Actions - For Request Recipient */}
@@ -1121,30 +1121,22 @@ export default function ChatScreen() {
           </View>
         )}
       </KeyboardAvoidingView>
-      {selectedUserId && (
-        <UserProfileModal
-          visible={modalVisible}
-          onClose={() => {
-            setModalVisible(false);
-            setSelectedUserId(null);
-          }}
-          userId={selectedUserId}
-        />
-      )}
-      {activeBuddyId && (
-        <ReportModal
-          visible={showReportModal}
-          reportedUserId={activeBuddyId}
-          reportedUserName={Array.isArray(buddyName) ? buddyName[0] : buddyName || 'User'}
-          chatId={chatId || undefined}
-          onClose={() => setShowReportModal(false)}
-          onReportSubmitted={() => {
-            setShowReportModal(false);
-            // Navigate back after report is submitted
-            router.back();
-          }}
-        />
-      )}
+      <UserProfileModal
+        ref={userProfileRef}
+        userId={selectedUserId || ''}
+        onClose={() => {
+          setSelectedUserId(null);
+        }}
+      />
+      <ReportModal
+        ref={reportModalRef}
+        reportedUserId={activeBuddyId || ''}
+        reportedUserName={Array.isArray(buddyName) ? buddyName[0] : buddyName || 'User'}
+        chatId={chatId || undefined}
+        onReportSubmitted={() => {
+          router.back();
+        }}
+      />
     </SafeAreaView>
   );
 }

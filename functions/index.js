@@ -819,6 +819,42 @@ async function fetchRaceDetails(raceId) {
 }
 
 /**
+ * Check if a race is a bike/cycling race based on its name, description, or sport_type.
+ * Returns true if the race appears to be a bike race and should be excluded.
+ */
+function isBikeOrCyclingRace(race) {
+  const bikeKeywords = [
+    "bike", "biking", "cycling", "cyclist", "bicycle",
+    "mtb", "mountain bike", "gravel ride", "gravel grind",
+    "pedal", "criterium", "crit race", "velodrome",
+    "cyclocross", "cx race", "tour de", "gran fondo",
+    "fondo", "century ride", "fat tire",
+  ];
+
+  const name = (race.name || race.EventName || "").toLowerCase();
+  const description = (race.description || "").toLowerCase();
+  const sportType = (race.sport_type || "").toLowerCase();
+
+  // If RunSignup provides a sport_type and it's not running/trail, exclude it
+  if (sportType && sportType !== "running" && sportType !== "trail_running" && sportType !== "") {
+    // Only exclude if it's explicitly a non-running sport
+    if (sportType === "cycling" || sportType === "biking" || sportType === "triathlon" ||
+        sportType === "duathlon" || sportType === "mountain_biking") {
+      return true;
+    }
+  }
+
+  // Check name and description for bike keywords
+  for (const keyword of bikeKeywords) {
+    if (name.includes(keyword) || description.includes(keyword)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Map a RunSignup race to our Firestore trails schema
  */
 function mapRunSignupToTrail(race, details) {
@@ -827,8 +863,8 @@ function mapRunSignupToTrail(race, details) {
   const state = race.address?.state || "";
   const location = city && state ? `${city}, ${state}` : city || state || "Unknown";
 
-  // Build distances array from events
-  const distances = events
+  // Build distances array from events — deduplicate by label
+  const rawDistances = events
     .filter((e) => e.event_type === "running_race" || !e.volunteer || e.volunteer === "F")
     .map((e) => {
       const currentPeriod = e.registration_periods?.[0];
@@ -847,6 +883,29 @@ function mapRunSignupToTrail(race, details) {
         gpxRouteLink: "",
       };
     });
+
+  // Filter out junk/non-race distances (volunteer shifts, donations, "ignore", etc.)
+  const JUNK_LABELS = new Set([
+    "ignore", "volunteer", "donation", "spectator", "crew",
+    "virtual", "n/a", "none", "test", "placeholder",
+  ]);
+  const filteredDistances = rawDistances.filter((d) => {
+    const label = (d.label || "").toLowerCase().trim();
+    if (!label) return false;
+    if (JUNK_LABELS.has(label)) return false;
+    // Also filter labels that are clearly not distances (too generic)
+    if (label === "other" || label === "misc") return false;
+    return true;
+  });
+
+  // Deduplicate — RunSignup can have multiple events with the same distance label
+  const seenLabels = new Set();
+  const distances = filteredDistances.filter((d) => {
+    const key = (d.label || "").toLowerCase().trim();
+    if (!key || seenLabels.has(key)) return false;
+    seenLabels.add(key);
+    return true;
+  });
 
   const distancesOffered = distances.map((d) => d.label).filter(Boolean);
 
@@ -880,9 +939,9 @@ function mapRunSignupToTrail(race, details) {
     isRegistrationOpen: race.is_registration_open === "T",
     // Visibility — show these in the app
     isVisibleOnApp: true,
-    // Geo data — will be enriched later or from city lookup
-    latitude: null,
-    longitude: null,
+    // Geo data — extract from RunSignup address when available
+    latitude: race.address?.lat ? parseFloat(race.address.lat) : null,
+    longitude: race.address?.lng ? parseFloat(race.address.lng) : null,
     // Timestamps
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
     lastSyncedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -922,8 +981,15 @@ exports.syncRunSignupRaces = functions
         const races = await fetchRunSignupRaces(state);
         console.log(`${state}: Found ${races.length} trail races`);
 
-        const newRaces = races.filter((r) => !existingRaceIds.has(r.race_id));
-        totalSkipped += (races.length - newRaces.length);
+        // Filter out bike/cycling races
+        const runningRaces = races.filter((r) => !isBikeOrCyclingRace(r));
+        const bikeFiltered = races.length - runningRaces.length;
+        if (bikeFiltered > 0) {
+          console.log(`${state}: Filtered out ${bikeFiltered} bike/cycling races`);
+        }
+
+        const newRaces = runningRaces.filter((r) => !existingRaceIds.has(r.race_id));
+        totalSkipped += (runningRaces.length - newRaces.length);
 
         if (newRaces.length === 0) {
           console.log(`${state}: No new races to import`);
@@ -968,7 +1034,8 @@ exports.manualRunSignupSync = functions
     // Check if admin (by role or email)
     const userSnap = await admin.firestore().collection("users").doc(context.auth.uid).get();
     const isAdmin = (userSnap.exists && userSnap.data().role === "admin") ||
-      context.auth.token.email === "rolsen83@gmail.com";
+      context.auth.token.email === "rolsen83@gmail.com" ||
+      context.auth.token.email === "steff.gardner@mac.com";
     if (!isAdmin) {
       throw new functions.https.HttpsError("permission-denied", "Admin access required.");
     }
@@ -990,6 +1057,15 @@ exports.manualRunSignupSync = functions
 
         if (races.length === 0) continue;
 
+        // Filter out bike/cycling races
+        const runningRaces = races.filter((r) => !isBikeOrCyclingRace(r));
+        const bikeFiltered = races.length - runningRaces.length;
+        if (bikeFiltered > 0) {
+          console.log(`${state}: Filtered out ${bikeFiltered} bike/cycling races`);
+        }
+
+        if (runningRaces.length === 0) continue;
+
         // Build a set of existing runsignupRaceIds to avoid querying one by one
         const existingSnap = await db
           .collection("trails")
@@ -1004,9 +1080,9 @@ exports.manualRunSignupSync = functions
         });
 
         // Filter to only truly new races
-        const newRaces = races.filter((r) => !existingRaceIds.has(r.race_id));
-        totalSkipped += (races.length - newRaces.length);
-        console.log(`${state}: ${newRaces.length} new, ${races.length - newRaces.length} already exist`);
+        const newRaces = runningRaces.filter((r) => !existingRaceIds.has(r.race_id));
+        totalSkipped += (runningRaces.length - newRaces.length);
+        console.log(`${state}: ${newRaces.length} new, ${runningRaces.length - newRaces.length} already exist`);
 
         // Batch-write new races (max 500 per batch)
         const BATCH_SIZE = 400;
@@ -1215,7 +1291,8 @@ exports.manualUltraSignupSync = functions
 
     const userSnap = await admin.firestore().collection("users").doc(context.auth.uid).get();
     const isAdmin = (userSnap.exists && userSnap.data().role === "admin") ||
-      context.auth.token.email === "rolsen83@gmail.com";
+      context.auth.token.email === "rolsen83@gmail.com" ||
+      context.auth.token.email === "steff.gardner@mac.com";
     if (!isAdmin) {
       throw new functions.https.HttpsError("permission-denied", "Admin access required.");
     }
@@ -1262,6 +1339,75 @@ exports.manualUltraSignupSync = functions
     return { success: true, imported: totalImported, skipped: skipped };
   });
 
+// ─── Bike Race Cleanup ──────────────────────────────────────────────────────
+
+/**
+ * Callable function: Remove bike/cycling races that were already imported into Firestore.
+ * Scans all RunSignup and UltraSignup races and deletes any that match bike keywords.
+ */
+exports.cleanupBikeRaces = functions
+  .runWith({ timeoutSeconds: 540, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
+    }
+
+    const userSnap = await admin.firestore().collection("users").doc(context.auth.uid).get();
+    const isAdmin = (userSnap.exists && userSnap.data().role === "admin") ||
+      context.auth.token.email === "rolsen83@gmail.com" ||
+      context.auth.token.email === "steff.gardner@mac.com";
+    if (!isAdmin) {
+      throw new functions.https.HttpsError("permission-denied", "Admin access required.");
+    }
+
+    const db = admin.firestore();
+    const bikeKeywords = [
+      "bike", "biking", "cycling", "cyclist", "bicycle",
+      "mtb", "mountain bike", "gravel ride", "gravel grind",
+      "pedal", "criterium", "crit race", "velodrome",
+      "cyclocross", "cx race", "tour de", "gran fondo",
+      "fondo", "century ride", "fat tire",
+    ];
+
+    // Query all external races
+    const snap = await db.collection("trails")
+      .where("source", "in", ["runsignup", "ultrasignup"])
+      .get();
+
+    const toDelete = [];
+    snap.forEach((doc) => {
+      const d = doc.data();
+      const name = (d.name || "").toLowerCase();
+      const description = (d.description || "").toLowerCase();
+
+      for (const keyword of bikeKeywords) {
+        if (name.includes(keyword) || description.includes(keyword)) {
+          toDelete.push(doc.ref);
+          break;
+        }
+      }
+    });
+
+    console.log(`Found ${toDelete.length} bike/cycling races to remove out of ${snap.size} total`);
+
+    // Delete in batches
+    const BATCH_SIZE = 400;
+    let totalDeleted = 0;
+    for (let i = 0; i < toDelete.length; i += BATCH_SIZE) {
+      const batch = db.batch();
+      const chunk = toDelete.slice(i, i + BATCH_SIZE);
+      for (const ref of chunk) {
+        batch.delete(ref);
+      }
+      await batch.commit();
+      totalDeleted += chunk.length;
+      console.log(`Deleted batch of ${chunk.length} bike races`);
+    }
+
+    console.log(`Cleanup complete: ${totalDeleted} bike/cycling races removed`);
+    return { success: true, deleted: totalDeleted, scanned: snap.size };
+  });
+
 // ─── Geocoding (OpenStreetMap Nominatim — free, no key) ─────────────────────
 
 /**
@@ -1295,8 +1441,9 @@ function geocodeLocation(locationStr) {
 }
 
 /**
- * Callable function: Geocode all trails that are missing coordinates
- * Groups by unique location to minimize API calls, respects 1 req/sec rate limit
+ * Callable function: Geocode trails that are missing coordinates
+ * Processes up to ~400 unique locations per call (≈7 min at 1 req/sec).
+ * Call repeatedly until remaining === 0.
  */
 exports.geocodeTrails = functions
   .runWith({ timeoutSeconds: 540, memory: "512MB" })
@@ -1306,12 +1453,15 @@ exports.geocodeTrails = functions
     }
     const userSnap = await admin.firestore().collection("users").doc(context.auth.uid).get();
     const isAdminUser = (userSnap.exists && userSnap.data().role === "admin") ||
-      context.auth.token.email === "rolsen83@gmail.com";
+      context.auth.token.email === "rolsen83@gmail.com" ||
+      context.auth.token.email === "steff.gardner@mac.com";
     if (!isAdminUser) {
       throw new functions.https.HttpsError("permission-denied", "Admin access required.");
     }
 
     const db = admin.firestore();
+    const startTime = Date.now();
+    const MAX_RUNTIME_MS = 480000; // 8 minutes safety margin (out of 9 min timeout)
 
     // Get all trails missing coordinates
     const snap = await db.collection("trails").get();
@@ -1326,7 +1476,7 @@ exports.geocodeTrails = functions
     const locationGroups = {};
     for (const doc of missingDocs) {
       const loc = (doc.data().location || "").trim();
-      if (!loc || loc === "Unknown") continue;
+      if (!loc || loc === "Unknown" || loc === "Unknown Location") continue;
       if (!locationGroups[loc]) locationGroups[loc] = [];
       locationGroups[loc].push(doc.ref);
     }
@@ -1337,8 +1487,16 @@ exports.geocodeTrails = functions
     let geocoded = 0;
     let failed = 0;
     let updated = 0;
+    let skippedTimeout = 0;
 
     for (const loc of uniqueLocations) {
+      // Safety: stop before we hit the Cloud Function timeout
+      if (Date.now() - startTime > MAX_RUNTIME_MS) {
+        skippedTimeout = uniqueLocations.length - geocoded - failed;
+        console.log(`Stopping early — ${skippedTimeout} locations remaining (timeout safety)`);
+        break;
+      }
+
       try {
         const coords = await geocodeLocation(loc);
         if (coords) {
@@ -1371,8 +1529,9 @@ exports.geocodeTrails = functions
       await new Promise((resolve) => setTimeout(resolve, 1100));
     }
 
-    console.log(`Geocoding done: ${geocoded} locations resolved, ${updated} trails updated, ${failed} failed`);
-    return { success: true, geocoded, updated, failed, totalLocations: uniqueLocations.length };
+    const remaining = uniqueLocations.length - geocoded - failed;
+    console.log(`Geocoding batch done: ${geocoded} resolved, ${updated} trails updated, ${failed} failed, ${remaining} remaining`);
+    return { success: true, geocoded, updated, failed, remaining, totalLocations: uniqueLocations.length };
   });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2020,4 +2179,357 @@ exports.shareRacePage = functions.https.onRequest(async (req, res) => {
     res.status(500).send("Something went wrong");
   }
 });
+
+// ─── Auto-Fetch Race Results from RunSignup ──────────────────────────────────
+// This function checks completed_races with no finishTime and looks up results
+// from the RunSignup API, matching by the runner's first/last name.
+
+/**
+ * Fetch race results from RunSignup for a specific race and event.
+ * Returns an array of individual results.
+ */
+async function fetchRunSignupResults(raceId, eventId, page = 1) {
+  const url = `https://runsignup.com/Rest/race/${raceId}/results/get-results?format=json&event_id=${eventId}&page=${page}&results_per_page=500`;
+  try {
+    const data = await httpsGet(url);
+    return data;
+  } catch (err) {
+    console.error(`Error fetching results for race ${raceId}, event ${eventId}:`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Fetch the list of result sets for a race (to get event IDs with posted results)
+ */
+async function fetchRunSignupResultSets(raceId) {
+  const url = `https://runsignup.com/Rest/race/${raceId}/results/get-result-sets?format=json`;
+  try {
+    const data = await httpsGet(url);
+    return data;
+  } catch (err) {
+    console.error(`Error fetching result sets for race ${raceId}:`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Normalize a name for fuzzy comparison — lowercase, remove punctuation, extra spaces
+ */
+function normalizeName(name) {
+  return (name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Scheduled Cloud Function: Runs daily at 6 AM UTC.
+ * Finds completed_races with no finishTime where the race date has passed,
+ * looks up results on RunSignup, and updates the finishTime/rank if found.
+ */
+exports.fetchRaceResults = functions
+  .runWith({ timeoutSeconds: 540, memory: "512MB" })
+  .pubsub.schedule("every day 06:00")
+  .timeZone("America/New_York")
+  .onRun(async () => {
+    const db = admin.firestore();
+
+    // 1. Get all completed_races where finishTime is null or empty
+    const pendingSnapshot = await db
+      .collection("completed_races")
+      .where("finishTime", "==", null)
+      .get();
+
+    if (pendingSnapshot.empty) {
+      console.log("No pending results to fetch.");
+      return null;
+    }
+
+    console.log(`Found ${pendingSnapshot.size} completed races with pending results.`);
+
+    // 2. Group by trailId to batch lookups
+    const trailGroups = {};
+    pendingSnapshot.forEach((docSnap) => {
+      const data = docSnap.data();
+      const trailId = data.trailId;
+      if (!trailGroups[trailId]) {
+        trailGroups[trailId] = [];
+      }
+      trailGroups[trailId].push({ docId: docSnap.id, ...data });
+    });
+
+    let totalUpdated = 0;
+    let totalChecked = 0;
+
+    // 3. For each trail, check if it's a RunSignup race and fetch results
+    for (const [trailId, completedEntries] of Object.entries(trailGroups)) {
+      try {
+        const trailDoc = await db.collection("trails").doc(trailId).get();
+        if (!trailDoc.exists) {
+          console.log(`Trail ${trailId} not found in Firestore, skipping.`);
+          continue;
+        }
+
+        const trailData = trailDoc.data();
+
+        // Only handle RunSignup races for now
+        if (trailData.source !== "runsignup" || !trailData.runsignupRaceId) {
+          console.log(`Trail ${trailId} is not a RunSignup race (source: ${trailData.source}), skipping.`);
+          continue;
+        }
+
+        const rsRaceId = trailData.runsignupRaceId;
+        const raceName = trailData.name || "Unknown";
+        console.log(`Checking results for "${raceName}" (RunSignup ID: ${rsRaceId})`);
+
+        // 4. Fetch result sets to find which events have posted results
+        const resultSetsData = await fetchRunSignupResultSets(rsRaceId);
+        if (!resultSetsData || !resultSetsData.result_sets || resultSetsData.result_sets.length === 0) {
+          console.log(`  No result sets posted yet for "${raceName}".`);
+          continue;
+        }
+
+        // Collect all individual results across all events
+        const allResults = [];
+        for (const resultSet of resultSetsData.result_sets) {
+          const eventId = resultSet.event_id;
+          if (!eventId) continue;
+
+          let page = 1;
+          let hasMore = true;
+          while (hasMore) {
+            const resultsData = await fetchRunSignupResults(rsRaceId, eventId, page);
+            if (!resultsData) break;
+
+            // RunSignup returns results in different possible structures
+            const results =
+              resultsData.individual_results_sets?.[0]?.results ||
+              resultsData.results ||
+              [];
+
+            if (results.length === 0) {
+              hasMore = false;
+            } else {
+              allResults.push(...results);
+              // If we got a full page, there might be more
+              hasMore = results.length >= 500;
+              page++;
+            }
+          }
+        }
+
+        if (allResults.length === 0) {
+          console.log(`  No individual results found for "${raceName}".`);
+          continue;
+        }
+
+        console.log(`  Found ${allResults.length} total results for "${raceName}".`);
+
+        // 5. For each pending completed_race entry, look up the user and match
+        for (const entry of completedEntries) {
+          totalChecked++;
+          try {
+            const userDoc = await db.collection("users").doc(entry.userId).get();
+            if (!userDoc.exists) {
+              console.log(`  User ${entry.userId} not found, skipping.`);
+              continue;
+            }
+
+            const userData = userDoc.data();
+            const userFirst = normalizeName(userData.firstName);
+            const userLast = normalizeName(userData.lastName);
+
+            if (!userFirst || !userLast) {
+              console.log(`  User ${entry.userId} missing name, skipping.`);
+              continue;
+            }
+
+            // Find matching result by first + last name
+            const match = allResults.find((r) => {
+              const rFirst = normalizeName(r.first_name || r.user?.first_name);
+              const rLast = normalizeName(r.last_name || r.user?.last_name);
+              return rFirst === userFirst && rLast === userLast;
+            });
+
+            if (match) {
+              // Extract finish time and placement
+              const finishTime = match.clock_time || match.chip_time || match.finish_time || "";
+              const overallPlace = match.place || match.overall_place || "";
+              const genderPlace = match.gender_place || "";
+              const ageGroupPlace = match.age_group_place || "";
+              const pace = match.pace || "";
+
+              // Build a rank string
+              let rankStr = "";
+              if (overallPlace) {
+                rankStr = `${overallPlace} overall`;
+                if (genderPlace) rankStr += ` / ${genderPlace} gender`;
+                if (ageGroupPlace) rankStr += ` / ${ageGroupPlace} AG`;
+              }
+
+              console.log(`  ✅ Match found for ${userData.firstName} ${userData.lastName}: ${finishTime} (${rankStr})`);
+
+              await db.collection("completed_races").doc(entry.docId).update({
+                finishTime: finishTime,
+                rank: rankStr || null,
+                pace: pace || null,
+                resultsSource: "runsignup",
+                resultsUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              });
+              totalUpdated++;
+            } else {
+              console.log(`  ❌ No match for ${userData.firstName} ${userData.lastName} in "${raceName}" results.`);
+            }
+          } catch (userErr) {
+            console.error(`  Error processing user ${entry.userId}:`, userErr.message);
+          }
+        }
+      } catch (trailErr) {
+        console.error(`Error processing trail ${trailId}:`, trailErr.message);
+      }
+    }
+
+    console.log(`Results fetch complete: ${totalUpdated} updated out of ${totalChecked} checked.`);
+    return null;
+  });
+
+/**
+ * Callable: Manually trigger results fetch for all pending completed races
+ * (or for a specific trailId if provided).
+ */
+exports.manualFetchResults = functions
+  .runWith({ timeoutSeconds: 540, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError("unauthenticated", "Must be signed in.");
+    }
+
+    const db = admin.firestore();
+    const specificTrailId = data?.trailId || null;
+
+    // Build query — all pending, or just for one race
+    let pendingQuery = db.collection("completed_races").where("finishTime", "==", null);
+    const pendingSnapshot = await pendingQuery.get();
+
+    if (pendingSnapshot.empty) {
+      return { success: true, message: "No pending results to fetch.", updated: 0, checked: 0 };
+    }
+
+    // Group by trailId
+    const trailGroups = {};
+    pendingSnapshot.forEach((docSnap) => {
+      const docData = docSnap.data();
+      const trailId = docData.trailId;
+      if (specificTrailId && trailId !== specificTrailId) return;
+      if (!trailGroups[trailId]) {
+        trailGroups[trailId] = [];
+      }
+      trailGroups[trailId].push({ docId: docSnap.id, ...docData });
+    });
+
+    let totalUpdated = 0;
+    let totalChecked = 0;
+
+    for (const [trailId, completedEntries] of Object.entries(trailGroups)) {
+      try {
+        const trailDoc = await db.collection("trails").doc(trailId).get();
+        if (!trailDoc.exists) continue;
+
+        const trailData = trailDoc.data();
+        if (trailData.source !== "runsignup" || !trailData.runsignupRaceId) continue;
+
+        const rsRaceId = trailData.runsignupRaceId;
+
+        // Fetch result sets
+        const resultSetsData = await fetchRunSignupResultSets(rsRaceId);
+        if (!resultSetsData || !resultSetsData.result_sets || resultSetsData.result_sets.length === 0) continue;
+
+        // Collect all results
+        const allResults = [];
+        for (const resultSet of resultSetsData.result_sets) {
+          const eventId = resultSet.event_id;
+          if (!eventId) continue;
+
+          let page = 1;
+          let hasMore = true;
+          while (hasMore) {
+            const resultsData = await fetchRunSignupResults(rsRaceId, eventId, page);
+            if (!resultsData) break;
+
+            const results =
+              resultsData.individual_results_sets?.[0]?.results ||
+              resultsData.results ||
+              [];
+
+            if (results.length === 0) {
+              hasMore = false;
+            } else {
+              allResults.push(...results);
+              hasMore = results.length >= 500;
+              page++;
+            }
+          }
+        }
+
+        if (allResults.length === 0) continue;
+
+        // Match users
+        for (const entry of completedEntries) {
+          totalChecked++;
+          try {
+            const userDoc = await db.collection("users").doc(entry.userId).get();
+            if (!userDoc.exists) continue;
+
+            const userData = userDoc.data();
+            const userFirst = normalizeName(userData.firstName);
+            const userLast = normalizeName(userData.lastName);
+            if (!userFirst || !userLast) continue;
+
+            const match = allResults.find((r) => {
+              const rFirst = normalizeName(r.first_name || r.user?.first_name);
+              const rLast = normalizeName(r.last_name || r.user?.last_name);
+              return rFirst === userFirst && rLast === userLast;
+            });
+
+            if (match) {
+              const finishTime = match.clock_time || match.chip_time || match.finish_time || "";
+              const overallPlace = match.place || match.overall_place || "";
+              const genderPlace = match.gender_place || "";
+              const ageGroupPlace = match.age_group_place || "";
+              const pace = match.pace || "";
+
+              let rankStr = "";
+              if (overallPlace) {
+                rankStr = `${overallPlace} overall`;
+                if (genderPlace) rankStr += ` / ${genderPlace} gender`;
+                if (ageGroupPlace) rankStr += ` / ${ageGroupPlace} AG`;
+              }
+
+              await db.collection("completed_races").doc(entry.docId).update({
+                finishTime: finishTime,
+                rank: rankStr || null,
+                pace: pace || null,
+                resultsSource: "runsignup",
+                resultsUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              });
+              totalUpdated++;
+            }
+          } catch (userErr) {
+            console.error(`Error processing user ${entry.userId}:`, userErr.message);
+          }
+        }
+      } catch (trailErr) {
+        console.error(`Error processing trail ${trailId}:`, trailErr.message);
+      }
+    }
+
+    return {
+      success: true,
+      message: `Results fetch complete: ${totalUpdated} updated out of ${totalChecked} checked.`,
+      updated: totalUpdated,
+      checked: totalChecked,
+    };
+  });
 

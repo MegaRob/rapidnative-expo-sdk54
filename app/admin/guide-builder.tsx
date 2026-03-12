@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ScrollView, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Text, TextInput, TouchableOpacity, View } from "react-native";
+import KeyboardScreen from "../components/KeyboardScreen";
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../../src/firebaseConfig";
 
@@ -161,7 +162,7 @@ export default function GuideBuilder({ raceId, race }: GuideBuilderProps) {
   };
 
   return (
-    <ScrollView className="bg-slate-900/70 rounded-[2rem] p-6">
+    <KeyboardScreen contentContainerStyle={{ padding: 24 }} style={{ backgroundColor: 'rgba(15,23,42,0.7)', borderRadius: 32 }}>
       <Text className="text-emerald-400 text-lg font-semibold mb-4">
         Race Guide
       </Text>
@@ -435,6 +436,6 @@ export default function GuideBuilder({ raceId, race }: GuideBuilderProps) {
           {saving ? "Saving..." : "Save Race Guide"}
         </Text>
       </TouchableOpacity>
-    </ScrollView>
+    </KeyboardScreen>
   );
 }

@@ -1,7 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { Modal, View, Text, Pressable, ScrollView } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { X, MapPin, Navigation, Calendar, ChevronLeft, ChevronRight } from 'lucide-react-native';
+import React, { forwardRef, useState, useEffect, useCallback, useRef } from 'react';
+import { View, Text, Pressable } from 'react-native';
+import { BottomSheetFooter } from '@gorhom/bottom-sheet';
+import type { BottomSheetFooterProps } from '@gorhom/bottom-sheet';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { MapPin, Navigation, Calendar, ChevronLeft, ChevronRight } from 'lucide-react-native';
+import StandardBottomSheet, { StandardBottomSheetHandle } from './StandardBottomSheet';
 
 export type DistanceFilter = 'All' | '5K-25K' | '50K' | '100K' | '100M+';
 export type DifficultyFilter = 'All' | 'Technical/Skyrunning' | 'Moderate/Mountain' | 'Easy/Fire Road';
@@ -17,12 +20,17 @@ export interface RaceFilters {
   dateTo: Date | null;
 }
 
+/* ── Public handle exposed via ref ──────────────────────────────────── */
+export interface FilterModalHandle {
+  present: () => void;
+  close: () => void;
+}
+
 interface FilterModalProps {
-  visible: boolean;
   filters: RaceFilters;
-  onClose: () => void;
+  onClose?: () => void;
   onApply: (filters: RaceFilters) => void;
-  onReset: () => void;
+  onReset?: () => void;
   gpsStatus?: 'active' | 'denied' | 'unavailable' | 'loading';
   gpsLocationName?: string;
 }
@@ -39,432 +47,496 @@ const DISTANCE_OPTIONS: DistanceFilter[] = ['All', '5K-25K', '50K', '100K', '100
 const DIFFICULTY_OPTIONS: DifficultyFilter[] = ['All', 'Technical/Skyrunning', 'Moderate/Mountain', 'Easy/Fire Road'];
 const ELEVATION_OPTIONS: ElevationFilter[] = ['All', '< 2,000ft', '2,000-5,000ft', '5,000-10,000ft', '10,000ft+'];
 
-export default function FilterModal({
-  visible,
-  filters,
-  onClose,
-  onApply,
-  onReset,
-  gpsStatus = 'unavailable',
-  gpsLocationName,
-}: FilterModalProps) {
-  const insets = useSafeAreaInsets();
-  const [localFilters, setLocalFilters] = useState<RaceFilters>(filters);
+const FilterModal = forwardRef<FilterModalHandle, FilterModalProps>(
+  (
+    {
+      filters,
+      onClose,
+      onApply,
+      onReset,
+      gpsStatus = 'unavailable',
+      gpsLocationName,
+    },
+    ref
+  ) => {
+    const sheetRef = useRef<StandardBottomSheetHandle>(null);
+    const [localFilters, setLocalFilters] = useState<RaceFilters>(filters);
+    const [isOpen, setIsOpen] = useState(false);
 
-  // Sync local filters with props when modal opens
-  useEffect(() => {
-    if (visible) {
-      setLocalFilters(filters);
-    }
-  }, [visible, filters]);
+    // Expose present / close to parent via ref
+    React.useImperativeHandle(ref, () => ({
+      present: () => {
+        setIsOpen(true);
+        sheetRef.current?.present();
+      },
+      close: () => {
+        sheetRef.current?.close();
+      },
+    }));
 
-  const handleApply = () => {
-    onApply(localFilters);
-    onClose();
-  };
+    // Sync local filters with props when sheet opens
+    useEffect(() => {
+      if (isOpen) {
+        setLocalFilters(filters);
+      }
+    }, [isOpen, filters]);
 
-  const handleReset = () => {
-    const resetFilters: RaceFilters = {
-      radius: 0,
-      distance: 'All',
-      difficulty: 'All',
-      elevation: 'All',
-      dateFrom: null,
-      dateTo: null,
+    const handleApply = useCallback(() => {
+      onApply(localFilters);
+      sheetRef.current?.close();
+    }, [localFilters, onApply]);
+
+    const handleReset = useCallback(() => {
+      const resetFilters: RaceFilters = {
+        radius: 0,
+        distance: 'All',
+        difficulty: 'All',
+        elevation: 'All',
+        dateFrom: null,
+        dateTo: null,
+      };
+      setLocalFilters(resetFilters);
+      setShowDatePicker(null);
+      onReset?.();
+      sheetRef.current?.close();
+    }, [onReset]);
+
+    const handleClose = useCallback(() => {
+      setIsOpen(false);
+      onClose?.();
+    }, [onClose]);
+
+    const hasActiveFilters =
+      localFilters.radius !== 0 ||
+      localFilters.distance !== 'All' ||
+      localFilters.difficulty !== 'All' ||
+      localFilters.elevation !== 'All' ||
+      localFilters.dateFrom !== null ||
+      localFilters.dateTo !== null;
+
+    const gpsAvailable = gpsStatus === 'active';
+    const radiusSelected = localFilters.radius > 0;
+
+    // Date picker state
+    const [showDatePicker, setShowDatePicker] = useState<'from' | 'to' | null>(null);
+    const [pickerYear, setPickerYear] = useState(() => new Date().getFullYear());
+    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    const formatDateLabel = (date: Date | null): string => {
+      if (!date) return 'Any';
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     };
-    setLocalFilters(resetFilters);
-    setShowDatePicker(null);
-    onReset();
-    onClose();
-  };
 
-  const hasActiveFilters = 
-    localFilters.radius !== 0 ||
-    localFilters.distance !== 'All' ||
-    localFilters.difficulty !== 'All' ||
-    localFilters.elevation !== 'All' ||
-    localFilters.dateFrom !== null ||
-    localFilters.dateTo !== null;
+    const insets = useSafeAreaInsets();
 
-  const gpsAvailable = gpsStatus === 'active';
-  const radiusSelected = localFilters.radius > 0;
-
-  // Date picker state: null = closed, 'from' | 'to' = which picker is open
-  const [showDatePicker, setShowDatePicker] = useState<'from' | 'to' | null>(null);
-  const [pickerYear, setPickerYear] = useState(() => new Date().getFullYear());
-  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-  const formatDateLabel = (date: Date | null): string => {
-    if (!date) return 'Any';
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  };
-
-  const handleMonthSelect = (monthIndex: number) => {
-    if (!showDatePicker) return;
-    // Set first day of month for "from", last day for "to"
-    let selected: Date;
-    if (showDatePicker === 'from') {
-      selected = new Date(pickerYear, monthIndex, 1);
-    } else {
-      // Last day of the selected month
-      selected = new Date(pickerYear, monthIndex + 1, 0);
-    }
-
-    // Validate: from can't be after to, to can't be before from
-    if (showDatePicker === 'from' && localFilters.dateTo && selected > localFilters.dateTo) {
-      setLocalFilters({ ...localFilters, dateFrom: selected, dateTo: null });
-    } else if (showDatePicker === 'to' && localFilters.dateFrom && selected < localFilters.dateFrom) {
-      // Don't allow — do nothing
-      return;
-    } else {
-      setLocalFilters({ ...localFilters, [showDatePicker === 'from' ? 'dateFrom' : 'dateTo']: selected });
-    }
-    setShowDatePicker(null);
-  };
-
-  return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      transparent={false}
-      onRequestClose={onClose}
-    >
-      <View className="flex-1 bg-slate-950" style={{ paddingTop: insets.top }}>
-        {/* Header */}
-        <View className="flex-row justify-between items-center px-4 py-3 border-b border-slate-800">
-          <Text className="text-white text-xl font-bold">Filter Races</Text>
-          <Pressable
-            onPress={onClose}
-            className="w-10 h-10 items-center justify-center rounded-full bg-slate-800"
-            hitSlop={12}
+    /* ── Sticky footer: Apply & Reset buttons pinned to the bottom ─── */
+    const renderFooter = useCallback(
+      (props: BottomSheetFooterProps) => (
+        <BottomSheetFooter {...props} bottomInset={insets.bottom}>
+          <View
+            style={{
+              flexDirection: 'row',
+              gap: 12,
+              paddingHorizontal: 24,
+              paddingTop: 12,
+              paddingBottom: 16,
+              backgroundColor: '#1E293B',
+              borderTopWidth: 1,
+              borderTopColor: '#334155',
+            }}
           >
-            <X size={24} color="#fff" />
-          </Pressable>
-        </View>
-
-        <ScrollView className="flex-1 p-5">
-          {/* Search Radius Filter */}
-          <View className="mb-6">
-            <Text className="text-white text-lg font-semibold mb-2">Search Radius</Text>
-
-            {/* GPS Status Indicator */}
-            <View className="flex-row items-center mb-3 px-1">
-              {gpsStatus === 'active' && (
-                <>
-                  <Navigation size={14} color="#34D399" />
-                  <Text className="text-emerald-400 text-xs ml-1.5 font-medium">
-                    GPS Active{gpsLocationName ? ` · ${gpsLocationName}` : ''}
-                  </Text>
-                </>
-              )}
-              {gpsStatus === 'loading' && (
-                <>
-                  <Navigation size={14} color="#9CA3AF" />
-                  <Text className="text-gray-400 text-xs ml-1.5">Getting your location...</Text>
-                </>
-              )}
-              {gpsStatus === 'denied' && (
-                <>
-                  <MapPin size={14} color="#F87171" />
-                  <Text className="text-red-400 text-xs ml-1.5">Location access denied — enable in Settings</Text>
-                </>
-              )}
-              {gpsStatus === 'unavailable' && (
-                <>
-                  <MapPin size={14} color="#9CA3AF" />
-                  <Text className="text-gray-400 text-xs ml-1.5">Location unavailable</Text>
-                </>
-              )}
-            </View>
-
-            {/* Radius not functional without GPS */}
-            {!gpsAvailable && radiusSelected && (
-              <View className="bg-amber-900/30 border border-amber-700/50 rounded-lg p-3 mb-3">
-                <Text className="text-amber-300 text-xs">
-                  Radius filtering requires GPS access. Enable location services to use this filter.
-                </Text>
-              </View>
-            )}
-
-            <View className="flex-row flex-wrap gap-2">
-              {RADIUS_OPTIONS.map((option) => {
-                const isSelected = localFilters.radius === option.value;
-                const isDisabled = option.value !== 0 && !gpsAvailable;
-                return (
-                  <Pressable
-                    key={option.value}
-                    onPress={() => {
-                      if (!isDisabled) {
-                        setLocalFilters({ ...localFilters, radius: option.value });
-                      }
-                    }}
-                    className={`px-4 py-2.5 rounded-full ${
-                      isSelected
-                        ? 'bg-emerald-500'
-                        : isDisabled
-                          ? 'bg-slate-800/50'
-                          : 'bg-slate-800'
-                    }`}
-                    style={{ opacity: isDisabled ? 0.4 : 1 }}
-                  >
-                    <Text
-                      className={`text-sm font-semibold ${
-                        isSelected ? 'text-white' : isDisabled ? 'text-gray-500' : 'text-gray-300'
-                      }`}
-                    >
-                      {option.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </View>
-
-          {/* Distance Filter */}
-          <View className="mb-6">
-            <Text className="text-white text-lg font-semibold mb-3">Distance</Text>
-            <View className="flex-row flex-wrap gap-2">
-              {DISTANCE_OPTIONS.map((option) => (
-                <Pressable
-                  key={option}
-                  onPress={() => setLocalFilters({ ...localFilters, distance: option })}
-                  className={`px-4 py-2 rounded-full ${
-                    localFilters.distance === option
-                      ? 'bg-emerald-500'
-                      : 'bg-slate-800'
-                  }`}
-                >
-                  <Text
-                    className={`text-sm font-semibold ${
-                      localFilters.distance === option ? 'text-white' : 'text-gray-300'
-                    }`}
-                  >
-                    {option}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </View>
-
-          {/* Difficulty Filter */}
-          <View className="mb-6">
-            <Text className="text-white text-lg font-semibold mb-3">Difficulty</Text>
-            <View className="flex-row flex-wrap gap-2">
-              {DIFFICULTY_OPTIONS.map((option) => (
-                <Pressable
-                  key={option}
-                  onPress={() => setLocalFilters({ ...localFilters, difficulty: option })}
-                  className={`px-4 py-2 rounded-full ${
-                    localFilters.difficulty === option
-                      ? 'bg-emerald-500'
-                      : 'bg-slate-800'
-                  }`}
-                >
-                  <Text
-                    className={`text-sm font-semibold ${
-                      localFilters.difficulty === option ? 'text-white' : 'text-gray-300'
-                    }`}
-                  >
-                    {option}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </View>
-
-          {/* Elevation Filter */}
-          <View className="mb-6">
-            <Text className="text-white text-lg font-semibold mb-3">Elevation Gain</Text>
-            <View className="flex-row flex-wrap gap-2">
-              {ELEVATION_OPTIONS.map((option) => (
-                <Pressable
-                  key={option}
-                  onPress={() => setLocalFilters({ ...localFilters, elevation: option })}
-                  className={`px-4 py-2 rounded-full ${
-                    localFilters.elevation === option
-                      ? 'bg-emerald-500'
-                      : 'bg-slate-800'
-                  }`}
-                >
-                  <Text
-                    className={`text-sm font-semibold ${
-                      localFilters.elevation === option ? 'text-white' : 'text-gray-300'
-                    }`}
-                  >
-                    {option}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </View>
-
-          {/* Date Range Filter */}
-          <View className="mb-6">
-            <Text className="text-white text-lg font-semibold mb-3">Race Dates</Text>
-            <View className="flex-row gap-3 mb-3">
-              {/* From button */}
-              <Pressable
-                onPress={() => {
-                  setPickerYear(localFilters.dateFrom?.getFullYear() ?? new Date().getFullYear());
-                  setShowDatePicker(showDatePicker === 'from' ? null : 'from');
-                }}
-                className={`flex-1 flex-row items-center px-4 py-3 rounded-xl border ${
-                  showDatePicker === 'from'
-                    ? 'border-emerald-500 bg-emerald-500/10'
-                    : localFilters.dateFrom
-                      ? 'border-emerald-500/50 bg-slate-800'
-                      : 'border-slate-700 bg-slate-800'
-                }`}
-              >
-                <Calendar size={16} color={localFilters.dateFrom ? '#34D399' : '#9CA3AF'} />
-                <View className="ml-2 flex-1">
-                  <Text className="text-gray-400 text-xs">From</Text>
-                  <Text className={`text-sm font-semibold ${localFilters.dateFrom ? 'text-white' : 'text-gray-500'}`}>
-                    {formatDateLabel(localFilters.dateFrom)}
-                  </Text>
-                </View>
-              </Pressable>
-
-              {/* To button */}
-              <Pressable
-                onPress={() => {
-                  setPickerYear(localFilters.dateTo?.getFullYear() ?? localFilters.dateFrom?.getFullYear() ?? new Date().getFullYear());
-                  setShowDatePicker(showDatePicker === 'to' ? null : 'to');
-                }}
-                className={`flex-1 flex-row items-center px-4 py-3 rounded-xl border ${
-                  showDatePicker === 'to'
-                    ? 'border-emerald-500 bg-emerald-500/10'
-                    : localFilters.dateTo
-                      ? 'border-emerald-500/50 bg-slate-800'
-                      : 'border-slate-700 bg-slate-800'
-                }`}
-              >
-                <Calendar size={16} color={localFilters.dateTo ? '#34D399' : '#9CA3AF'} />
-                <View className="ml-2 flex-1">
-                  <Text className="text-gray-400 text-xs">To</Text>
-                  <Text className={`text-sm font-semibold ${localFilters.dateTo ? 'text-white' : 'text-gray-500'}`}>
-                    {formatDateLabel(localFilters.dateTo)}
-                  </Text>
-                </View>
-              </Pressable>
-            </View>
-
-            {/* Clear dates button */}
-            {(localFilters.dateFrom || localFilters.dateTo) && (
-              <Pressable
-                onPress={() => {
-                  setLocalFilters({ ...localFilters, dateFrom: null, dateTo: null });
-                  setShowDatePicker(null);
-                }}
-                className="self-start mb-3"
-              >
-                <Text className="text-emerald-400 text-xs font-medium">Clear dates</Text>
-              </Pressable>
-            )}
-
-            {/* Month/Year picker inline */}
-            {showDatePicker && (
-              <View className="bg-slate-900 rounded-2xl p-4 border border-slate-700">
-                {/* Year navigation */}
-                <View className="flex-row items-center justify-between mb-4">
-                  <Pressable
-                    onPress={() => setPickerYear(prev => prev - 1)}
-                    className="w-10 h-10 items-center justify-center rounded-full bg-slate-800"
-                    hitSlop={8}
-                  >
-                    <ChevronLeft size={20} color="#fff" />
-                  </Pressable>
-                  <Text className="text-white text-lg font-bold">{pickerYear}</Text>
-                  <Pressable
-                    onPress={() => setPickerYear(prev => prev + 1)}
-                    className="w-10 h-10 items-center justify-center rounded-full bg-slate-800"
-                    hitSlop={8}
-                  >
-                    <ChevronRight size={20} color="#fff" />
-                  </Pressable>
-                </View>
-
-                {/* Month grid (3 x 4) */}
-                <View className="flex-row flex-wrap">
-                  {MONTHS.map((month, index) => {
-                    const now = new Date();
-                    const monthDate = showDatePicker === 'from'
-                      ? new Date(pickerYear, index, 1)
-                      : new Date(pickerYear, index + 1, 0);
-                    const isPast = showDatePicker === 'from'
-                      ? new Date(pickerYear, index + 1, 0) < new Date(now.getFullYear(), now.getMonth(), 1)
-                      : monthDate < new Date(now.getFullYear(), now.getMonth(), 1);
-                    const isBelowFrom = showDatePicker === 'to' && localFilters.dateFrom
-                      ? monthDate < localFilters.dateFrom
-                      : false;
-                    const isDisabled = isPast || isBelowFrom;
-
-                    const isSelected =
-                      (showDatePicker === 'from' && localFilters.dateFrom &&
-                        localFilters.dateFrom.getMonth() === index &&
-                        localFilters.dateFrom.getFullYear() === pickerYear) ||
-                      (showDatePicker === 'to' && localFilters.dateTo &&
-                        localFilters.dateTo.getMonth() === index &&
-                        localFilters.dateTo.getFullYear() === pickerYear);
-
-                    return (
-                      <Pressable
-                        key={month}
-                        onPress={() => !isDisabled && handleMonthSelect(index)}
-                        className={`w-1/4 p-1`}
-                      >
-                        <View
-                          className={`items-center py-2.5 rounded-xl ${
-                            isSelected
-                              ? 'bg-emerald-500'
-                              : isDisabled
-                                ? 'bg-slate-800/30'
-                                : 'bg-slate-800'
-                          }`}
-                          style={isDisabled ? { opacity: 0.35 } : undefined}
-                        >
-                          <Text
-                            className={`text-sm font-semibold ${
-                              isSelected ? 'text-white' : isDisabled ? 'text-gray-600' : 'text-gray-300'
-                            }`}
-                          >
-                            {month}
-                          </Text>
-                        </View>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-
-                {/* Selecting label */}
-                <Text className="text-gray-500 text-xs text-center mt-3">
-                  Selecting {showDatePicker === 'from' ? 'start' : 'end'} date
-                </Text>
-              </View>
-            )}
-          </View>
-        </ScrollView>
-
-        {/* Footer Buttons */}
-        <View className="p-5 border-t border-slate-800">
-          <View className="flex-row gap-3">
             <Pressable
               onPress={handleReset}
-              className="flex-1 bg-slate-800 py-4 rounded-lg items-center"
+              style={{
+                flex: 1,
+                backgroundColor: '#0F172A',
+                paddingVertical: 16,
+                borderRadius: 12,
+                alignItems: 'center',
+              }}
             >
-              <Text className="text-white text-base font-semibold">Reset</Text>
+              <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>Reset</Text>
             </Pressable>
             <Pressable
               onPress={handleApply}
-              className={`flex-1 py-4 rounded-lg items-center ${
-                hasActiveFilters ? 'bg-emerald-500' : 'bg-slate-700'
-              }`}
+              style={{
+                flex: 1,
+                paddingVertical: 16,
+                borderRadius: 12,
+                alignItems: 'center',
+                backgroundColor: hasActiveFilters ? '#10B981' : '#334155',
+              }}
             >
-              <Text className="text-white text-base font-bold">Apply Filters</Text>
+              <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '700' }}>
+                Apply Filters
+              </Text>
             </Pressable>
           </View>
+        </BottomSheetFooter>
+      ),
+      [handleApply, handleReset, hasActiveFilters, insets.bottom]
+    );
+
+    const handleMonthSelect = (monthIndex: number) => {
+      if (!showDatePicker) return;
+      let selected: Date;
+      if (showDatePicker === 'from') {
+        selected = new Date(pickerYear, monthIndex, 1);
+      } else {
+        selected = new Date(pickerYear, monthIndex + 1, 0);
+      }
+
+      if (showDatePicker === 'from' && localFilters.dateTo && selected > localFilters.dateTo) {
+        setLocalFilters({ ...localFilters, dateFrom: selected, dateTo: null });
+      } else if (showDatePicker === 'to' && localFilters.dateFrom && selected < localFilters.dateFrom) {
+        return;
+      } else {
+        setLocalFilters({ ...localFilters, [showDatePicker === 'from' ? 'dateFrom' : 'dateTo']: selected });
+      }
+      setShowDatePicker(null);
+    };
+
+    return (
+      <StandardBottomSheet
+        ref={sheetRef}
+        title="Filter Races"
+        snapPoints={['50%', '90%']}
+        onClose={handleClose}
+        footerComponent={renderFooter}
+      >
+        {/* Search Radius Filter */}
+        <View style={{ marginBottom: 24 }}>
+          <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '600', marginBottom: 8 }}>
+            Search Radius
+          </Text>
+
+          {/* GPS Status Indicator */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12, paddingHorizontal: 4 }}>
+            {gpsStatus === 'active' && (
+              <>
+                <Navigation size={14} color="#34D399" />
+                <Text style={{ color: '#34D399', fontSize: 12, marginLeft: 6, fontWeight: '500' }}>
+                  GPS Active{gpsLocationName ? ` · ${gpsLocationName}` : ''}
+                </Text>
+              </>
+            )}
+            {gpsStatus === 'loading' && (
+              <>
+                <Navigation size={14} color="#9CA3AF" />
+                <Text style={{ color: '#9CA3AF', fontSize: 12, marginLeft: 6 }}>Getting your location...</Text>
+              </>
+            )}
+            {gpsStatus === 'denied' && (
+              <>
+                <MapPin size={14} color="#F87171" />
+                <Text style={{ color: '#F87171', fontSize: 12, marginLeft: 6 }}>Location access denied — enable in Settings</Text>
+              </>
+            )}
+            {gpsStatus === 'unavailable' && (
+              <>
+                <MapPin size={14} color="#9CA3AF" />
+                <Text style={{ color: '#9CA3AF', fontSize: 12, marginLeft: 6 }}>Location unavailable</Text>
+              </>
+            )}
+          </View>
+
+          {/* Radius not functional without GPS */}
+          {!gpsAvailable && radiusSelected && (
+            <View style={{ backgroundColor: 'rgba(120, 53, 15, 0.3)', borderWidth: 1, borderColor: 'rgba(146, 64, 14, 0.5)', borderRadius: 8, padding: 12, marginBottom: 12 }}>
+              <Text style={{ color: '#FCD34D', fontSize: 12 }}>
+                Radius filtering requires GPS access. Enable location services to use this filter.
+              </Text>
+            </View>
+          )}
+
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {RADIUS_OPTIONS.map((option) => {
+              const isSelected = localFilters.radius === option.value;
+              const isDisabled = option.value !== 0 && !gpsAvailable;
+              return (
+                <Pressable
+                  key={option.value}
+                  onPress={() => {
+                    if (!isDisabled) {
+                      setLocalFilters({ ...localFilters, radius: option.value });
+                    }
+                  }}
+                  style={{
+                    paddingHorizontal: 16,
+                    paddingVertical: 10,
+                    borderRadius: 20,
+                    backgroundColor: isSelected ? '#10B981' : isDisabled ? 'rgba(30, 41, 59, 0.5)' : '#1E293B',
+                    opacity: isDisabled ? 0.4 : 1,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 14,
+                      fontWeight: '600',
+                      color: isSelected ? '#FFFFFF' : isDisabled ? '#6B7280' : '#D1D5DB',
+                    }}
+                  >
+                    {option.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
         </View>
-      </View>
-    </Modal>
-  );
-}
+
+        {/* Distance Filter */}
+        <View style={{ marginBottom: 24 }}>
+          <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '600', marginBottom: 12 }}>Distance</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {DISTANCE_OPTIONS.map((option) => (
+              <Pressable
+                key={option}
+                onPress={() => setLocalFilters({ ...localFilters, distance: option })}
+                style={{
+                  paddingHorizontal: 16,
+                  paddingVertical: 8,
+                  borderRadius: 20,
+                  backgroundColor: localFilters.distance === option ? '#10B981' : '#1E293B',
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 14,
+                    fontWeight: '600',
+                    color: localFilters.distance === option ? '#FFFFFF' : '#D1D5DB',
+                  }}
+                >
+                  {option}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+
+        {/* Difficulty Filter */}
+        <View style={{ marginBottom: 24 }}>
+          <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '600', marginBottom: 12 }}>Difficulty</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {DIFFICULTY_OPTIONS.map((option) => (
+              <Pressable
+                key={option}
+                onPress={() => setLocalFilters({ ...localFilters, difficulty: option })}
+                style={{
+                  paddingHorizontal: 16,
+                  paddingVertical: 8,
+                  borderRadius: 20,
+                  backgroundColor: localFilters.difficulty === option ? '#10B981' : '#1E293B',
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 14,
+                    fontWeight: '600',
+                    color: localFilters.difficulty === option ? '#FFFFFF' : '#D1D5DB',
+                  }}
+                >
+                  {option}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+
+        {/* Elevation Filter */}
+        <View style={{ marginBottom: 24 }}>
+          <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '600', marginBottom: 12 }}>Elevation Gain</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {ELEVATION_OPTIONS.map((option) => (
+              <Pressable
+                key={option}
+                onPress={() => setLocalFilters({ ...localFilters, elevation: option })}
+                style={{
+                  paddingHorizontal: 16,
+                  paddingVertical: 8,
+                  borderRadius: 20,
+                  backgroundColor: localFilters.elevation === option ? '#10B981' : '#1E293B',
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 14,
+                    fontWeight: '600',
+                    color: localFilters.elevation === option ? '#FFFFFF' : '#D1D5DB',
+                  }}
+                >
+                  {option}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+
+        {/* Date Range Filter */}
+        <View style={{ marginBottom: 24 }}>
+          <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '600', marginBottom: 12 }}>Race Dates</Text>
+          <View style={{ flexDirection: 'row', gap: 12, marginBottom: 12 }}>
+            {/* From button */}
+            <Pressable
+              onPress={() => {
+                setPickerYear(localFilters.dateFrom?.getFullYear() ?? new Date().getFullYear());
+                setShowDatePicker(showDatePicker === 'from' ? null : 'from');
+              }}
+              style={{
+                flex: 1,
+                flexDirection: 'row',
+                alignItems: 'center',
+                paddingHorizontal: 16,
+                paddingVertical: 12,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: showDatePicker === 'from' ? '#10B981' : localFilters.dateFrom ? 'rgba(16, 185, 129, 0.5)' : '#334155',
+                backgroundColor: showDatePicker === 'from' ? 'rgba(16, 185, 129, 0.1)' : '#1E293B',
+              }}
+            >
+              <Calendar size={16} color={localFilters.dateFrom ? '#34D399' : '#9CA3AF'} />
+              <View style={{ marginLeft: 8, flex: 1 }}>
+                <Text style={{ color: '#9CA3AF', fontSize: 12 }}>From</Text>
+                <Text style={{ fontSize: 14, fontWeight: '600', color: localFilters.dateFrom ? '#FFFFFF' : '#6B7280' }}>
+                  {formatDateLabel(localFilters.dateFrom)}
+                </Text>
+              </View>
+            </Pressable>
+
+            {/* To button */}
+            <Pressable
+              onPress={() => {
+                setPickerYear(localFilters.dateTo?.getFullYear() ?? localFilters.dateFrom?.getFullYear() ?? new Date().getFullYear());
+                setShowDatePicker(showDatePicker === 'to' ? null : 'to');
+              }}
+              style={{
+                flex: 1,
+                flexDirection: 'row',
+                alignItems: 'center',
+                paddingHorizontal: 16,
+                paddingVertical: 12,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: showDatePicker === 'to' ? '#10B981' : localFilters.dateTo ? 'rgba(16, 185, 129, 0.5)' : '#334155',
+                backgroundColor: showDatePicker === 'to' ? 'rgba(16, 185, 129, 0.1)' : '#1E293B',
+              }}
+            >
+              <Calendar size={16} color={localFilters.dateTo ? '#34D399' : '#9CA3AF'} />
+              <View style={{ marginLeft: 8, flex: 1 }}>
+                <Text style={{ color: '#9CA3AF', fontSize: 12 }}>To</Text>
+                <Text style={{ fontSize: 14, fontWeight: '600', color: localFilters.dateTo ? '#FFFFFF' : '#6B7280' }}>
+                  {formatDateLabel(localFilters.dateTo)}
+                </Text>
+              </View>
+            </Pressable>
+          </View>
+
+          {/* Clear dates button */}
+          {(localFilters.dateFrom || localFilters.dateTo) && (
+            <Pressable
+              onPress={() => {
+                setLocalFilters({ ...localFilters, dateFrom: null, dateTo: null });
+                setShowDatePicker(null);
+              }}
+              style={{ alignSelf: 'flex-start', marginBottom: 12 }}
+            >
+              <Text style={{ color: '#34D399', fontSize: 12, fontWeight: '500' }}>Clear dates</Text>
+            </Pressable>
+          )}
+
+          {/* Month/Year picker inline */}
+          {showDatePicker && (
+            <View style={{ backgroundColor: '#0F172A', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#334155' }}>
+              {/* Year navigation */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                <Pressable
+                  onPress={() => setPickerYear((prev) => prev - 1)}
+                  style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center', borderRadius: 20, backgroundColor: '#1E293B' }}
+                  hitSlop={8}
+                >
+                  <ChevronLeft size={20} color="#fff" />
+                </Pressable>
+                <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '700' }}>{pickerYear}</Text>
+                <Pressable
+                  onPress={() => setPickerYear((prev) => prev + 1)}
+                  style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center', borderRadius: 20, backgroundColor: '#1E293B' }}
+                  hitSlop={8}
+                >
+                  <ChevronRight size={20} color="#fff" />
+                </Pressable>
+              </View>
+
+              {/* Month grid (3 x 4) */}
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                {MONTHS.map((month, index) => {
+                  const now = new Date();
+                  const monthDate =
+                    showDatePicker === 'from'
+                      ? new Date(pickerYear, index, 1)
+                      : new Date(pickerYear, index + 1, 0);
+                  const isPast =
+                    showDatePicker === 'from'
+                      ? new Date(pickerYear, index + 1, 0) < new Date(now.getFullYear(), now.getMonth(), 1)
+                      : monthDate < new Date(now.getFullYear(), now.getMonth(), 1);
+                  const isBelowFrom =
+                    showDatePicker === 'to' && localFilters.dateFrom
+                      ? monthDate < localFilters.dateFrom
+                      : false;
+                  const isDisabled = isPast || isBelowFrom;
+
+                  const isSelected =
+                    (showDatePicker === 'from' &&
+                      localFilters.dateFrom &&
+                      localFilters.dateFrom.getMonth() === index &&
+                      localFilters.dateFrom.getFullYear() === pickerYear) ||
+                    (showDatePicker === 'to' &&
+                      localFilters.dateTo &&
+                      localFilters.dateTo.getMonth() === index &&
+                      localFilters.dateTo.getFullYear() === pickerYear);
+
+                  return (
+                    <Pressable
+                      key={month}
+                      onPress={() => !isDisabled && handleMonthSelect(index)}
+                      style={{ width: '25%', padding: 4 }}
+                    >
+                      <View
+                        style={{
+                          alignItems: 'center',
+                          paddingVertical: 10,
+                          borderRadius: 12,
+                          backgroundColor: isSelected ? '#10B981' : isDisabled ? 'rgba(30, 41, 59, 0.3)' : '#1E293B',
+                          opacity: isDisabled ? 0.35 : 1,
+                        }}
+                      >
+                        <Text
+                          style={{
+                            fontSize: 14,
+                            fontWeight: '600',
+                            color: isSelected ? '#FFFFFF' : isDisabled ? '#4B5563' : '#D1D5DB',
+                          }}
+                        >
+                          {month}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              {/* Selecting label */}
+              <Text style={{ color: '#6B7280', fontSize: 12, textAlign: 'center', marginTop: 12 }}>
+                Selecting {showDatePicker === 'from' ? 'start' : 'end'} date
+              </Text>
+            </View>
+          )}
+        </View>
+
+        {/* Extra bottom padding so scrollable content doesn't hide behind the sticky footer */}
+        <View style={{ height: 80 }} />
+      </StandardBottomSheet>
+    );
+  }
+);
+
+FilterModal.displayName = 'FilterModal';
+export default FilterModal;

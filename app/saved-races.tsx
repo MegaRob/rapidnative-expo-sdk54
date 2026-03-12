@@ -1,11 +1,11 @@
 import { useNavigation, useRouter } from 'expo-router';
 import { arrayRemove, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, Timestamp, updateDoc, where } from "firebase/firestore";
 import { ArrowLeft, Calendar, Clock, MapPin, Pin, Trophy, X } from 'lucide-react-native';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, AppState, FlatList, Image, LayoutAnimation, Linking, Pressable, Text, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, AppState, FlatList, Image, InteractionManager, LayoutAnimation, Linking, Pressable, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { auth, db } from '../src/firebaseConfig';
-import DistancePickerModal, { DistanceOption } from './components/DistancePickerModal';
+import DistancePickerModal, { DistanceOption, DistancePickerModalHandle } from './components/DistancePickerModal';
 import RegistrationForm from './components/RegistrationForm';
 import { SkeletonLoader } from './components/SkeletonLoader';
 
@@ -64,8 +64,8 @@ const getRaceImageUrl = (trailData: Record<string, any> | undefined) =>
   normalizeImageUrl(trailData?.featuredImageUrl) ||
   "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=900&auto=format&fit=crop&q=60&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxzZWFyY2h8Mnx8bW91bnRhaW5zJTIwYW5kJTIwbGFrZXxlbnwwfHwwfHx8MA%3D%3D";
 
-// Segmented Control Component
-const SegmentedControl = ({ 
+// Segmented Control Component — memoized to avoid re-renders when list data changes
+const SegmentedControl = React.memo(({ 
   selectedTab, 
   onTabChange 
 }: { 
@@ -98,7 +98,7 @@ const SegmentedControl = ({
       })}
     </View>
   );
-};
+});
 
 // Liked Race Card Component - Memoized for performance
 const LikedRaceCard = React.memo(({ 
@@ -546,7 +546,7 @@ export default function SavedRacesScreen() {
   const [loading, setLoading] = useState(true);
   const [trailCache, setTrailCache] = useState<Map<string, any>>(new Map());
   const [showRegistrationModal, setShowRegistrationModal] = useState(false);
-  const [showDistancePicker, setShowDistancePicker] = useState(false);
+  const distancePickerRef = useRef<DistancePickerModalHandle>(null);
   const [activeRegistrationRace, setActiveRegistrationRace] = useState<Race | null>(null);
   const [selectedRegistrationDistance, setSelectedRegistrationDistance] = useState<string | undefined>(undefined);
   const user = auth.currentUser;
@@ -558,7 +558,8 @@ export default function SavedRacesScreen() {
     });
   }, [navigation]);
 
-  // Optimized: Fetch all data in parallel on mount
+  // Optimized: Fetch all data in parallel on mount.
+  // Deferred until after navigation transition completes to prevent jank.
   useEffect(() => {
     const fetchAllData = async () => {
       if (!user) {
@@ -751,7 +752,10 @@ export default function SavedRacesScreen() {
       }
     };
 
-    fetchAllData();
+    const task = InteractionManager.runAfterInteractions(() => {
+      fetchAllData();
+    });
+    return () => task.cancel();
   }, [user]);
 
   // NOTE: Removed expensive onSnapshot on ALL trails collection.
@@ -794,9 +798,20 @@ export default function SavedRacesScreen() {
 
     // External race (RunSignup or UltraSignup) — open external URL + confirm
     const source = race.source;
-    const externalUrl = source === 'runsignup' ? race.runsignupUrl
-                      : source === 'ultrasignup' ? race.ultrasignupUrl
-                      : null;
+    // Build URL — use stored URL, or fall back to constructing one from race/event ID
+    let externalUrl: string | null = null;
+    if (source === 'runsignup') {
+      externalUrl = race.runsignupUrl
+        || (race.runsignupRaceId ? `https://runsignup.com/Race/${race.runsignupRaceId}` : null)
+        || race.website
+        || null;
+    } else if (source === 'ultrasignup') {
+      externalUrl = race.ultrasignupUrl
+        || (race.ultrasignupDateId ? `https://ultrasignup.com/register.aspx?did=${race.ultrasignupDateId}` : null)
+        || (race.ultrasignupEventId ? `https://ultrasignup.com/register.aspx?eid=${race.ultrasignupEventId}` : null)
+        || race.website
+        || null;
+    }
 
     if (externalUrl) {
       const sourceName = source === 'runsignup' ? 'RunSignup' : 'UltraSignup';
@@ -839,7 +854,7 @@ export default function SavedRacesScreen() {
                     // Refresh data
                     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
                     setLikedRaces(prev => prev.filter(r => r.id !== trailId && r.trailId !== trailId));
-                    Alert.alert('🎉 Registered!', 'This race is now in your Registered tab.');
+                    Alert.alert('Congratulations', 'Congratulations on registering for the race. We wish you the best of luck and have a blast!');
                   } catch (err) {
                     console.error('Error saving external registration:', err);
                     Alert.alert('Error', 'Could not save your registration. Please try again.');
@@ -851,7 +866,11 @@ export default function SavedRacesScreen() {
         }
       });
 
-      Linking.openURL(externalUrl);
+      Linking.openURL(externalUrl).catch((err) => {
+        console.error(`Failed to open ${sourceName} URL:`, err);
+        subscription.remove();
+        Alert.alert('Error', 'Could not open the registration page. Please try again.');
+      });
       return;
     }
 
@@ -861,7 +880,7 @@ export default function SavedRacesScreen() {
     // If race has multiple distances, show picker first
     const distancesArray = Array.isArray(race.distances) ? race.distances : [];
     if (distancesArray.length > 1) {
-      setShowDistancePicker(true);
+      distancePickerRef.current?.present();
     } else {
       // Single distance — go straight to registration
       const distance = race.distancesOffered?.[0] || race.distance || undefined;
@@ -1107,9 +1126,18 @@ export default function SavedRacesScreen() {
                 <LikedRaceCard
                   race={item as Race}
                   onPress={() => {
+                    const r = item as Race;
                     router.push({
                       pathname: "/race-details",
-                      params: { id: item.trailId || item.id },
+                      params: {
+                        id: r.trailId || r.id,
+                        source: r.source || '',
+                        runsignupUrl: r.runsignupUrl || '',
+                        ultrasignupUrl: r.ultrasignupUrl || '',
+                        runsignupRaceId: r.runsignupRaceId ? String(r.runsignupRaceId) : '',
+                        ultrasignupEventId: r.ultrasignupEventId ? String(r.ultrasignupEventId) : '',
+                        ultrasignupDateId: r.ultrasignupDateId ? String(r.ultrasignupDateId) : '',
+                      },
                     });
                   }}
                   onUnsave={handleUnsaveRace}
@@ -1149,9 +1177,13 @@ export default function SavedRacesScreen() {
                 <CompletedRaceCard
                   race={item as CompletedRace}
                   onPress={() => {
+                    const r = item as CompletedRace;
                     router.push({
                       pathname: "/race-details",
-                      params: { id: item.trailId || item.id },
+                      params: {
+                        id: r.trailId || r.id,
+                        source: r.source || '',
+                      },
                     });
                   }}
                 />
@@ -1171,13 +1203,12 @@ export default function SavedRacesScreen() {
 
       {/* Distance Picker Modal - shown when race has multiple distances */}
       <DistancePickerModal
-        visible={showDistancePicker}
+        ref={distancePickerRef}
         onClose={() => {
-          setShowDistancePicker(false);
           setActiveRegistrationRace(null);
         }}
         onSelect={(d: DistanceOption) => {
-          setShowDistancePicker(false);
+          distancePickerRef.current?.close();
           setSelectedRegistrationDistance(d.label);
           setShowRegistrationModal(true);
         }}

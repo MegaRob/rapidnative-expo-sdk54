@@ -13,8 +13,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { LinearGradient } from 'expo-linear-gradient';
+import KeyboardScreen from './components/KeyboardScreen';
 import { auth, db } from '../src/firebaseConfig';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -120,12 +120,8 @@ export default function SignUpScreen() {
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
       />
-      <KeyboardAwareScrollView
-        style={{ flex: 1 }}
+      <KeyboardScreen
         contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', paddingHorizontal: 24, paddingVertical: 40 }}
-        keyboardShouldPersistTaps="handled"
-        bounces={false}
-        bottomOffset={40}
       >
         {/* Logo / Branding */}
         <Animated.View
@@ -265,7 +261,7 @@ export default function SignUpScreen() {
             </TouchableOpacity>
           </View>
         </Animated.View>
-      </KeyboardAwareScrollView>
+      </KeyboardScreen>
     </View>
   );
 }

@@ -26,6 +26,7 @@ import {
   Animated,
   Button,
   Dimensions,
+  InteractionManager,
   PanResponder,
   Share,
   StyleSheet,
@@ -37,12 +38,28 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { auth, db } from '../../src/firebaseConfig';
 import { calculateDistance, geocodeLocation, getCoordinatesForCity } from '../../utils/geolocationUtils';
 import { applyRaceFilters } from '../../utils/raceFilters';
-import FilterModal, { RaceFilters } from '../components/FilterModal';
+import FilterModal, { FilterModalHandle, RaceFilters } from '../components/FilterModal';
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const SWIPE_THRESHOLD = SCREEN_WIDTH * 0.25; // 25% of screen width to trigger swipe
 const PREFETCH_BATCH_SIZE = 10;
 const RACE_BATCH_SIZE = 100; // Load 100 races per Firestore batch (pagination)
+
+// Keywords to identify bike/cycling races — filter these out client-side
+const BIKE_KEYWORDS = [
+  "bike", "biking", "cycling", "cyclist", "bicycle",
+  "mtb", "mountain bike", "gravel ride", "gravel grind",
+  "pedal", "criterium", "crit race", "velodrome",
+  "cyclocross", "cx race", "tour de", "gran fondo",
+  "fondo", "century ride", "fat tire",
+];
+
+/** Returns true if a Firestore race doc looks like a bike/cycling event */
+function isBikeRace(data: any): boolean {
+  const name = (data?.name || "").toLowerCase();
+  const description = (data?.description || "").toLowerCase();
+  return BIKE_KEYWORDS.some(kw => name.includes(kw) || description.includes(kw));
+}
 
 // This interface defines the structure our UI needs
 interface Trail {
@@ -79,7 +96,7 @@ export default function HomeScreen() {
   const [lastSwipedRace, setLastSwipedRace] = useState<Trail | null>(null);
   const [lastSwipeAction, setLastSwipeAction] = useState<'save' | 'dislike' | null>(null);
   const [hasUnreadMessages, setHasUnreadMessages] = useState(false);
-  const [showFilterModal, setShowFilterModal] = useState(false);
+  const filterModalRef = useRef<FilterModalHandle>(null);
   const [userLatitude, setUserLatitude] = useState<number | null>(null);
   const [userLongitude, setUserLongitude] = useState<number | null>(null);
   const [isResolvingLocation, setIsResolvingLocation] = useState(false);
@@ -108,6 +125,14 @@ export default function HomeScreen() {
   // --- GPS LOCATION ---
   useEffect(() => {
     let isMounted = true;
+
+    /** Race a promise against a timeout — resolves with null if it takes too long */
+    const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T | null> =>
+      Promise.race([
+        promise,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+      ]);
+
     const getGPSLocation = async () => {
       try {
         setGpsStatus('loading');
@@ -117,9 +142,29 @@ export default function HomeScreen() {
           return;
         }
 
-        const location = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
+        // Timeout after 10 seconds — Android cold GPS can hang for 30s+
+        const location = await withTimeout(
+          Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+          10000,
+        );
+
+        if (!location) {
+          // GPS timed out — try last known position as fallback
+          console.warn('GPS timed out after 10s, trying last known position');
+          const lastKnown = await withTimeout(
+            Location.getLastKnownPositionAsync(),
+            3000,
+          );
+          if (lastKnown && isMounted) {
+            setUserLatitude(lastKnown.coords.latitude);
+            setUserLongitude(lastKnown.coords.longitude);
+            setGpsStatus('active');
+          } else if (isMounted) {
+            setGpsStatus('unavailable');
+          }
+          return;
+        }
+
         const { latitude, longitude } = location.coords;
 
         if (isMounted) {
@@ -128,9 +173,12 @@ export default function HomeScreen() {
           setGpsStatus('active');
         }
 
-        // Reverse geocode for display name
+        // Reverse geocode for display name (non-blocking, 5s timeout)
         try {
-          const geocode = await Location.reverseGeocodeAsync({ latitude, longitude });
+          const geocode = await withTimeout(
+            Location.reverseGeocodeAsync({ latitude, longitude }),
+            5000,
+          );
           if (geocode && geocode.length > 0 && isMounted) {
             const addr = geocode[0];
             const name = addr.city && addr.region
@@ -164,15 +212,22 @@ export default function HomeScreen() {
     const lat = uLat ?? userLatitude;
     const lon = uLon ?? userLongitude;
 
-    // Can't filter without user coordinates
-    if (lat == null || lon == null) return races;
+    // Can't filter without user coordinates — exclude races without coords
+    // but keep races that DO have a pre-calculated distance
+    if (lat == null || lon == null) {
+      return races.filter((race) => {
+        if (race.distance != null) return race.distance <= selectedRadius;
+        return false; // No user GPS and no pre-calculated distance — can't verify
+      });
+    }
 
     return races.filter((race) => {
-      // If race has no coordinates, include it rather than hiding it
-      if (race.latitude == null || race.longitude == null || race.distance === undefined) {
-        return true;
+      if (race.latitude == null || race.longitude == null) {
+        return false;
       }
-      return race.distance <= selectedRadius;
+      // Always recalculate distance to ensure accuracy with current GPS
+      const dist = calculateDistance(lat, lon, race.latitude, race.longitude);
+      return dist <= selectedRadius;
     });
   };
 
@@ -364,6 +419,16 @@ export default function HomeScreen() {
 
   const onSignOut = async () => {
     try {
+      // Wipe data BEFORE signing out to prevent ghost renders
+      setLoadedRaces([]);
+      setAllRaces([]);
+      setCurrentIndex(0);
+      setUserProfile(null);
+      setLastSwipedRace(null);
+      setLastSwipeAction(null);
+      setHasUnreadMessages(false);
+      setLastVisibleDoc(null);
+      setHasMoreRaces(true);
       await signOut(auth);
       router.replace('/login');
     } catch (error) {
@@ -373,6 +438,8 @@ export default function HomeScreen() {
 
   // --- FETCH REAL DATA FROM FIREBASE ---
   useEffect(() => {
+    let isCancelled = false;
+
     const fetchTrails = async () => {
       try {
         if (!uid) {
@@ -398,6 +465,9 @@ export default function HomeScreen() {
           getDocs(query(collection(db, 'registrations'), where('userId', '==', uid))),
           getDocs(trailsQuery),
         ]);
+
+        // Bail out if the user logged out or uid changed while queries were in flight
+        if (isCancelled) return;
 
         let matchedTrailIds: string[] = [];
         // Use GPS coordinates (from state) as primary source for distance calc
@@ -443,22 +513,28 @@ export default function HomeScreen() {
               effectLat = profileLat;
               effectLon = profileLon;
             } else {
-              // Geocode from location name as last resort (non-blocking — done after cards show)
+              // ── Fire-and-forget geocoding: do NOT await it so cards load immediately.
+              //    Coordinates will be set asynchronously and races re-sorted on next render.
               const locationName = userData?.locationName || userData?.hometown || userData?.location || '';
               if (locationName) {
                 setIsResolvingLocation(true);
-                const coords = await geocodeLocation(locationName);
-                if (coords) {
-                  effectLat = coords.lat;
-                  effectLon = coords.lon;
-                  try {
-                    await updateDoc(userDocRef, { latitude: coords.lat, longitude: coords.lon });
-                  } catch {}
-                }
-                setIsResolvingLocation(false);
+                geocodeLocation(locationName)
+                  .then(async (coords) => {
+                    if (coords && !isCancelled) {
+                      setUserLatitude(coords.lat);
+                      setUserLongitude(coords.lon);
+                      try {
+                        await updateDoc(userDocRef, { latitude: coords.lat, longitude: coords.lon });
+                      } catch {}
+                    }
+                  })
+                  .catch(() => {})
+                  .finally(() => {
+                    if (!isCancelled) setIsResolvingLocation(false);
+                  });
               }
             }
-            // Only set state if GPS hasn't already provided coords
+            // Only set state if GPS hasn't already provided coords (from profile)
             if (userLatitude === null && effectLat !== null) {
               setUserLatitude(effectLat);
               setUserLongitude(effectLon);
@@ -495,7 +571,7 @@ export default function HomeScreen() {
         let trailsList = trailSnapshot.docs
           .filter(docSnap => {
             const d = docSnap.data();
-            return d?.isVisibleOnApp !== false && ALLOWED_SOURCES.has(d?.source);
+            return d?.isVisibleOnApp !== false && ALLOWED_SOURCES.has(d?.source) && !isBikeRace(d);
           })
           .map(docSnap => buildTrail(docSnap.id, docSnap.data()))
           .filter(trail => !ignoredIds.has(trail.id));
@@ -563,14 +639,16 @@ export default function HomeScreen() {
           }
         }
       } catch (error: any) {
+        if (isCancelled) return;
         console.error("Error fetching trails: ", error);
         setError(error.message);
       } finally {
-        setLoading(false);
+        if (!isCancelled) setLoading(false);
       }
     };
 
     fetchTrails();
+    return () => { isCancelled = true; };
   }, [buildTrail, uid, fetchKey]);
 
   // --- LOAD MORE RACES (PAGINATION) ---
@@ -600,13 +678,13 @@ export default function HomeScreen() {
       setLastVisibleDoc(snapshot.docs[snapshot.docs.length - 1]);
       setHasMoreRaces(snapshot.docs.length >= RACE_BATCH_SIZE);
 
-      // Build new trails, filtering out hidden, non-allowed sources, and already-seen races
+      // Build new trails, filtering out hidden, non-allowed sources, bike races, and already-seen races
       const excluded = excludedIdsRef.current;
       const ALLOWED_SOURCES = new Set(['runsignup', 'ultrasignup']);
       let newTrails = snapshot.docs
         .filter(docSnap => {
           const d = docSnap.data();
-          return d?.isVisibleOnApp !== false && ALLOWED_SOURCES.has(d?.source);
+          return d?.isVisibleOnApp !== false && ALLOWED_SOURCES.has(d?.source) && !isBikeRace(d);
         })
         .map(docSnap => buildTrail(docSnap.id, docSnap.data()))
         .filter(trail => !excluded.has(trail.id));
@@ -637,7 +715,7 @@ export default function HomeScreen() {
 
       // Apply current filters to the new batch and append to the swipe deck
       let filteredNew = applyRaceFilters(newTrails, filters);
-      filteredNew = filterByRadius(filteredNew, filters.radius);
+      filteredNew = filterByRadius(filteredNew, filters.radius, userLatitude, userLongitude);
 
       if (filteredNew.length > 0) {
         resetRacePositions(filteredNew);
@@ -664,9 +742,10 @@ export default function HomeScreen() {
     }
   }, [currentIndex, loadedRaces.length, hasMoreRaces, loadingMore, loadMoreRaces]);
 
-  // Re-apply filters when filters change (but don't re-fetch from Firestore)
+  // Re-apply filters when filters or race data change
   useEffect(() => {
     if (allRaces.length > 0) {
+      // Recalculate distances from current GPS position
       let racesWithDistance = allRaces;
       if (userLatitude !== null && userLongitude !== null) {
         racesWithDistance = allRaces.map(trail => {
@@ -683,8 +762,10 @@ export default function HomeScreen() {
         });
       }
 
+      // Apply non-radius filters (distance category, difficulty, elevation, date)
       let filteredRaces = applyRaceFilters(racesWithDistance, filters);
-      filteredRaces = filterByRadius(filteredRaces, filters.radius);
+      // Apply radius filter with explicit coordinates
+      filteredRaces = filterByRadius(filteredRaces, filters.radius, userLatitude, userLongitude);
 
       // Sort by distance (nearest first)
       filteredRaces.sort((a, b) => {
@@ -699,7 +780,7 @@ export default function HomeScreen() {
       setCurrentIndex(0);
       prefetchRaceImages(filteredRaces, 0, PREFETCH_BATCH_SIZE);
     }
-  }, [filters, userLatitude, userLongitude, userProfile, prefetchRaceImages]);
+  }, [filters, allRaces, userLatitude, userLongitude, prefetchRaceImages]);
   // --- END OF FETCH ---
 
   // --- LISTEN FOR UNREAD MESSAGES ---
@@ -721,58 +802,64 @@ export default function HomeScreen() {
   // --- END OF UNREAD MESSAGES LISTENER ---
 
   // --- SYNC SWIPE DECK ON SCREEN FOCUS ---
-  // Removes newly saved/registered races AND restores unfavorited races
+  // Removes newly saved/registered races AND restores unfavorited races.
+  // Wrapped in InteractionManager so heavy Firestore queries wait until the
+  // navigation transition animation finishes — prevents mid-transition jank.
   useFocusEffect(
     useCallback(() => {
-      const syncDeck = async () => {
-        if (!uid) return;
-        try {
-          const [userDoc, regSnapshot, completedSnapshot, dislikedSnapshot] = await Promise.all([
-            getDoc(doc(db, 'users', uid)),
-            getDocs(query(collection(db, 'registrations'), where('userId', '==', uid))),
-            getDocs(query(collection(db, 'completed_races'), where('userId', '==', uid))),
-            getDocs(collection(db, 'users', uid, 'dislikedRaces')),
-          ]);
+      const task = InteractionManager.runAfterInteractions(() => {
+        const syncDeck = async () => {
+          if (!uid) return;
+          try {
+            const [userDoc, regSnapshot, completedSnapshot, dislikedSnapshot] = await Promise.all([
+              getDoc(doc(db, 'users', uid)),
+              getDocs(query(collection(db, 'registrations'), where('userId', '==', uid))),
+              getDocs(query(collection(db, 'completed_races'), where('userId', '==', uid))),
+              getDocs(collection(db, 'users', uid, 'dislikedRaces')),
+            ]);
 
-          const matchedTrails = userDoc.exists() ? (userDoc.data()?.matchedTrails || []) : [];
-          const registeredIds = regSnapshot.docs.map(d => d.data().trailId);
-          const completedIds = completedSnapshot.docs.map(d => d.data().trailId);
-          const dislikedIds = dislikedSnapshot.docs.map(d => d.id);
-          const excludedIds = new Set([...matchedTrails, ...registeredIds, ...completedIds, ...dislikedIds]);
+            const matchedTrails = userDoc.exists() ? (userDoc.data()?.matchedTrails || []) : [];
+            const registeredIds = regSnapshot.docs.map(d => d.data().trailId);
+            const completedIds = completedSnapshot.docs.map(d => d.data().trailId);
+            const dislikedIds = dislikedSnapshot.docs.map(d => d.id);
+            const excludedIds = new Set([...matchedTrails, ...registeredIds, ...completedIds, ...dislikedIds]);
 
-          setLoadedRaces(prev => {
-            // Remove races that are now saved/registered/completed
-            const filtered = prev.filter(race => !excludedIds.has(race.id));
+            setLoadedRaces(prev => {
+              // Remove races that are now saved/registered/completed
+              const filtered = prev.filter(race => !excludedIds.has(race.id));
 
-            // Find races from allRaces that are no longer excluded (e.g. unfavorited)
-            const currentIds = new Set(filtered.map(r => r.id));
-            const racesToRestore = allRaces.filter(
-              race => !excludedIds.has(race.id) && !currentIds.has(race.id)
-            );
+              // Find races from allRaces that are no longer excluded (e.g. unfavorited)
+              const currentIds = new Set(filtered.map(r => r.id));
+              const racesToRestore = allRaces.filter(
+                race => !excludedIds.has(race.id) && !currentIds.has(race.id)
+              );
 
-            if (racesToRestore.length > 0) {
-              // Reset positions for restored races
-              racesToRestore.forEach(race => {
-                try {
-                  race.position?.setValue?.({ x: 0, y: 0 });
-                } catch (e) {}
-              });
-              const merged = [...filtered, ...racesToRestore];
-              setCurrentIndex(ci => Math.min(ci, Math.max(merged.length - 1, 0)));
-              return merged;
-            }
+              if (racesToRestore.length > 0) {
+                // Reset positions for restored races
+                racesToRestore.forEach(race => {
+                  try {
+                    race.position?.setValue?.({ x: 0, y: 0 });
+                  } catch (e) {}
+                });
+                const merged = [...filtered, ...racesToRestore];
+                setCurrentIndex(ci => Math.min(ci, Math.max(merged.length - 1, 0)));
+                return merged;
+              }
 
-            if (filtered.length < prev.length) {
-              setCurrentIndex(ci => Math.min(ci, Math.max(filtered.length - 1, 0)));
-            }
-            return filtered;
-          });
-        } catch (error) {
-          console.error('Error syncing swipe deck on focus:', error);
-        }
-      };
+              if (filtered.length < prev.length) {
+                setCurrentIndex(ci => Math.min(ci, Math.max(filtered.length - 1, 0)));
+              }
+              return filtered;
+            });
+          } catch (error) {
+            console.error('Error syncing swipe deck on focus:', error);
+          }
+        };
 
-      syncDeck();
+        syncDeck();
+      });
+
+      return () => task.cancel();
     }, [uid, allRaces])
   );
   // --- END SYNC SWIPE DECK ON FOCUS ---
@@ -1059,6 +1146,15 @@ export default function HomeScreen() {
 
   // --- RENDER LOGIC ---
 
+  // ── Only gate on auth — no user means nothing to render.
+  //    Everything else (loading, GPS, geocoding) is shown inline so the UI
+  //    mounts immediately and Android never deadlocks after a permission prompt.
+  if (!user) {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#1A1F25' }} />
+    );
+  }
+
   if (error) {
     return (
       <View style={{ flex: 1, backgroundColor: '#1A1F25', justifyContent: 'center', padding: 20 }}>
@@ -1066,24 +1162,6 @@ export default function HomeScreen() {
           {error}
         </Text>
         <Button title="LOG OUT" onPress={onSignOut} color="#8BC34A" />
-      </View>
-    );
-  }
-
-  // Handle Loading State
-  if (loading) {
-    return (
-      <View className="flex-1 bg-[#1A1F25] justify-center items-center">
-        <ActivityIndicator size="large" color="#8BC34A" />
-        <Text className="text-white mt-4">Loading trails...</Text>
-      </View>
-    );
-  }
-  if (isResolvingLocation) {
-    return (
-      <View className="flex-1 bg-[#1A1F25] justify-center items-center">
-        <ActivityIndicator size="large" color="#8BC34A" />
-        <Text className="text-white mt-4">Updating your location...</Text>
       </View>
     );
   }
@@ -1134,17 +1212,42 @@ export default function HomeScreen() {
     }
   };
 
-  // Show loading spinner if we've swiped through all cards but more are being fetched
-  if ((loadedRaces.length === 0 || !currentRace) && loadingMore) {
+  // ── Inline loading: show header + centered spinner while data is still fetching.
+  //    This keeps the UI mounted immediately — no render-blocking gates.
+  if (loading || ((loadedRaces.length === 0 || !currentRace) && loadingMore)) {
     return (
-      <View className="flex-1 bg-[#1A1F25] justify-center items-center">
-        <ActivityIndicator size="large" color="#8BC34A" />
-        <Text className="text-white mt-4">Loading more races...</Text>
-      </View>
+      <SafeAreaView style={{ flex: 1, backgroundColor: '#1A1F25' }} edges={['bottom', 'left', 'right']}>
+        <MainHeader
+          onSaved={handleNavigateToSaved}
+          onChat={handleNavigateToChat}
+          onProfile={handleNavigateToProfile}
+          onSearch={handleNavigateToSearch}
+          hasUnreadMessages={hasUnreadMessages}
+          onFilter={() => filterModalRef.current?.present()}
+          hasActiveFilters={hasActiveFilters}
+        />
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <ActivityIndicator size="large" color="#8BC34A" />
+          <Text style={{ color: '#FFFFFF', marginTop: 16 }}>
+            {loadingMore ? 'Loading more races...' : 'Searching for adventures...'}
+          </Text>
+          {(gpsStatus === 'loading' || isResolvingLocation) && (
+            <Text style={{ color: '#94A3B8', marginTop: 8, fontSize: 13 }}>
+              {isResolvingLocation ? 'Updating your location...' : 'Acquiring GPS...'}
+            </Text>
+          )}
+        </View>
+        <FilterModal
+          ref={filterModalRef}
+          filters={filters}
+          onApplyFilters={handleApplyFilters}
+          onResetFilters={handleResetFilters}
+        />
+      </SafeAreaView>
     );
   }
 
-  if (loadedRaces.length === 0) {
+  if (loadedRaces.length === 0 || !currentRace) {
     return (
       <EmptyScreen
         onRefresh={handleRefresh}
@@ -1156,36 +1259,7 @@ export default function HomeScreen() {
         hasUnreadMessages={hasUnreadMessages}
         onResetFilters={handleResetFilters}
         hasActiveFilters={hasActiveFilters}
-        onFilter={() => setShowFilterModal(true)}
-        showFilterModal={showFilterModal}
-        filters={filters}
-        onCloseFilterModal={() => setShowFilterModal(false)}
-        onApplyFilters={handleApplyFilters}
-        gpsStatus={gpsStatus}
-        gpsLocationName={gpsLocationName}
-      />
-    );
-  }
-
-  if (!currentRace) {
-    return (
-      <EmptyScreen
-        onRefresh={handleRefresh}
-        loading={loading}
-        onSaved={handleNavigateToSaved}
-        onChat={handleNavigateToChat}
-        onProfile={handleNavigateToProfile}
-        onSearch={handleNavigateToSearch}
-        hasUnreadMessages={hasUnreadMessages}
-        onResetFilters={handleResetFilters}
-        hasActiveFilters={hasActiveFilters}
-        onFilter={() => setShowFilterModal(true)}
-        showFilterModal={showFilterModal}
-        filters={filters}
-        onCloseFilterModal={() => setShowFilterModal(false)}
-        onApplyFilters={handleApplyFilters}
-        gpsStatus={gpsStatus}
-        gpsLocationName={gpsLocationName}
+        onFilter={() => filterModalRef.current?.present()}
       />
     );
   }
@@ -1199,7 +1273,7 @@ export default function HomeScreen() {
         onProfile={handleNavigateToProfile}
         onSearch={handleNavigateToSearch}
         hasUnreadMessages={hasUnreadMessages}
-        onFilter={() => setShowFilterModal(true)}
+        onFilter={() => filterModalRef.current?.present()}
         hasActiveFilters={hasActiveFilters}
       />
 
@@ -1425,6 +1499,7 @@ export default function HomeScreen() {
                   style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
                 >
                   {currentRace.location}
+                  {currentRace.distance != null ? ` · ${Math.round(currentRace.distance)} mi` : ''}
                 </Text>
               </View>
 
@@ -1438,85 +1513,41 @@ export default function HomeScreen() {
                 </Text>
               </View>
 
-              {/* Elevation & Distances — cap at 3 visible, "+X more" for the rest */}
+              {/* Distances & Elevation — compact single-line summary */}
               {(() => {
-                const MAX_VISIBLE = 3;
-                const elevByDist = currentRace.elevationsByDistance || [];
                 const distOffered = currentRace.distancesOffered || [];
+                const hasElevation = currentRace.elevation && currentRace.elevation.trim() !== '';
 
-                if (elevByDist.length > 1) {
-                  // Multi-distance with elevation data
-                  const visible = elevByDist.slice(0, MAX_VISIBLE);
-                  const extra = elevByDist.length - MAX_VISIBLE;
-                  return (
-                    <View className="mt-1.5">
-                      {visible.map((item, idx) => (
-                        <View key={idx} className="flex-row items-center mt-1">
-                          <Route size={16} color="#8BC34A" />
-                          <Text
-                            className="text-white text-base ml-2"
-                            style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
-                          >
-                            {item.label}
-                          </Text>
-                          {item.elevation ? (
-                            <>
-                              <View className="ml-3">
-                                <Mountain size={14} color="#8BC34A" />
-                              </View>
-                              <Text
-                                className="text-gray-300 text-sm ml-1"
-                                style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
-                              >
-                                {item.elevation}
-                              </Text>
-                            </>
-                          ) : null}
-                        </View>
-                      ))}
-                      {extra > 0 && (
+                return (
+                  <>
+                    {distOffered.length > 0 && (
+                      <View className="flex-row items-center mt-1.5">
+                        <Route size={16} color="#8BC34A" />
                         <Text
-                          className="text-gray-400 text-sm mt-1 ml-6"
+                          className="text-white text-base ml-2"
+                          style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
+                          numberOfLines={1}
+                        >
+                          {distOffered.length <= 2
+                            ? distOffered.join(' · ')
+                            : distOffered.slice(0, 2).join(' · ') + ` +${distOffered.length - 2} more`}
+                        </Text>
+                      </View>
+                    )}
+
+                    {hasElevation && (
+                      <View className="flex-row items-center mt-1.5">
+                        <Mountain size={16} color="#8BC34A" />
+                        <Text
+                          className="text-white text-base ml-2"
                           style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
                         >
-                          +{extra} more distance{extra > 1 ? 's' : ''}
+                          {currentRace.elevation} elevation
                         </Text>
-                      )}
-                    </View>
-                  );
-                } else {
-                  // Single distance or flat list
-                  return (
-                    <>
-                      {currentRace.elevation ? (
-                        <View className="flex-row items-center mt-1.5">
-                          <Mountain size={16} color="#8BC34A" />
-                          <Text
-                            className="text-white text-base ml-2"
-                            style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
-                          >
-                            {currentRace.elevation} elevation
-                          </Text>
-                        </View>
-                      ) : null}
-
-                      {distOffered.length > 0 && (
-                        <View className="flex-row items-center flex-wrap mt-1.5">
-                          <Route size={16} color="#8BC34A" />
-                          <Text
-                            className="text-white text-base ml-2"
-                            style={{ textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 }}
-                            numberOfLines={1}
-                          >
-                            {distOffered.length <= MAX_VISIBLE
-                              ? distOffered.join(' · ')
-                              : distOffered.slice(0, MAX_VISIBLE).join(' · ') + ` +${distOffered.length - MAX_VISIBLE} more`}
-                          </Text>
-                        </View>
-                      )}
-                    </>
-                  );
-                }
+                      </View>
+                    )}
+                  </>
+                );
               })()}
 
               {/* Miles away */}
@@ -1589,9 +1620,8 @@ export default function HomeScreen() {
 
       {/* Filter Modal */}
       <FilterModal
-        visible={showFilterModal}
+        ref={filterModalRef}
         filters={filters}
-        onClose={() => setShowFilterModal(false)}
         onApply={handleApplyFilters}
         onReset={handleResetFilters}
         gpsStatus={gpsStatus}
@@ -1605,7 +1635,7 @@ const styles = StyleSheet.create({
   // Styles moved to component classes
 });
 
-const EmptyScreen = ({
+const EmptyScreen = React.memo(({
   onRefresh,
   loading,
   onSaved,
@@ -1616,12 +1646,6 @@ const EmptyScreen = ({
   onResetFilters,
   hasActiveFilters = false,
   onFilter,
-  showFilterModal = false,
-  filters,
-  onCloseFilterModal,
-  onApplyFilters,
-  gpsStatus,
-  gpsLocationName,
 }: {
   onRefresh: () => void;
   loading: boolean;
@@ -1633,14 +1657,7 @@ const EmptyScreen = ({
   onResetFilters?: () => void;
   hasActiveFilters?: boolean;
   onFilter?: () => void;
-  showFilterModal?: boolean;
-  filters?: RaceFilters;
-  onCloseFilterModal?: () => void;
-  onApplyFilters?: (filters: RaceFilters) => void;
-  gpsStatus?: 'active' | 'denied' | 'unavailable' | 'loading';
-  gpsLocationName?: string;
 }) => {
-  const insets = useSafeAreaInsets();
   return (
     <SafeAreaView className="flex-1 bg-[#1A1F25]" edges={['bottom', 'left', 'right']}>
       <MainHeader 
@@ -1652,67 +1669,53 @@ const EmptyScreen = ({
         onFilter={onFilter}
         hasActiveFilters={hasActiveFilters}
       />
-    <View className="flex-1 justify-center items-center px-4">
-      {hasActiveFilters ? (
-        <>
-          <Text className="text-white text-xl mb-2 text-center">
-            No matching races found
+    <View className="flex-1 justify-center items-center px-6">
+      <Text className="text-4xl mb-4">🏔️</Text>
+      <Text className="text-white text-xl font-bold mb-2 text-center">
+        {hasActiveFilters ? "No matching races found" : "You've seen all the races!"}
+      </Text>
+      <Text className="text-gray-400 text-base mb-6 text-center leading-6">
+        {hasActiveFilters
+          ? "No races match your current filters. Try expanding your search radius or adjusting your filter settings."
+          : "There are no more races in your search area. Try increasing your search radius or updating your filters to discover more races."}
+      </Text>
+      <View style={{ gap: 12, width: '100%', alignItems: 'center' }}>
+        {onFilter && (
+          <TouchableOpacity
+            onPress={onFilter}
+            className="px-8 py-4 bg-emerald-500 rounded-full"
+            style={{ width: '80%', alignItems: 'center' }}
+          >
+            <Text className="text-white font-bold text-base">Update Filters</Text>
+          </TouchableOpacity>
+        )}
+        {hasActiveFilters && onResetFilters && (
+          <TouchableOpacity
+            onPress={onResetFilters}
+            className="px-8 py-4 bg-slate-700 rounded-full"
+            style={{ width: '80%', alignItems: 'center' }}
+          >
+            <Text className="text-white font-bold text-base">Reset Filters</Text>
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity
+          onPress={onRefresh}
+          disabled={loading}
+          className="px-8 py-4 rounded-full"
+          style={{ width: '80%', alignItems: 'center', borderWidth: 1, borderColor: '#475569' }}
+        >
+          <Text className="text-gray-300 font-bold text-base">
+            {loading ? 'Refreshing...' : 'Check for New Races'}
           </Text>
-          <Text className="text-gray-400 text-base mb-6 text-center">
-            Try adjusting your filters or resetting them to see more races.
-          </Text>
-          <View className="flex-row gap-3 mb-3">
-            {onFilter && (
-              <TouchableOpacity
-                onPress={onFilter}
-                className="px-6 py-3 bg-slate-700 rounded-full"
-              >
-                <Text className="text-white font-bold">Adjust Filters</Text>
-              </TouchableOpacity>
-            )}
-            {onResetFilters && (
-              <TouchableOpacity
-                onPress={onResetFilters}
-                className="px-6 py-3 bg-emerald-500 rounded-full"
-              >
-                <Text className="text-white font-bold">Reset Filters</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </>
-      ) : (
-        <>
-          <Text className="text-white text-xl mb-2 text-center">
-            No more races to show.
-          </Text>
-        </>
-      )}
-      <TouchableOpacity
-        onPress={onRefresh}
-        disabled={loading}
-        className="px-6 py-3 bg-[#8BC34A] rounded-full"
-      >
-        <Text className="text-white font-bold">Refresh</Text>
-      </TouchableOpacity>
+        </TouchableOpacity>
+      </View>
     </View>
     
-    {/* Filter Modal */}
-    {onFilter && filters && onCloseFilterModal && onApplyFilters && (
-      <FilterModal
-        visible={showFilterModal}
-        filters={filters}
-        onClose={onCloseFilterModal}
-        onApply={onApplyFilters}
-        onReset={onResetFilters}
-        gpsStatus={gpsStatus}
-        gpsLocationName={gpsLocationName}
-      />
-    )}
   </SafeAreaView>
   );
-};
+});
 
-const MainHeader = ({
+const MainHeader = React.memo(({
   onSaved,
   onChat,
   onProfile,
@@ -1771,4 +1774,4 @@ const MainHeader = ({
     </View>
   </View>
   );
-};
+});

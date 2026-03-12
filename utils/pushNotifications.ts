@@ -1,23 +1,40 @@
 import * as Device from 'expo-device';
-import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { doc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../src/firebaseConfig';
 
+// expo-notifications remote push was removed from Expo Go in SDK 53.
+// Lazy-require so everything degrades gracefully in Expo Go.
+let Notifications: typeof import('expo-notifications') | null = null;
+const isExpoGo = Constants.appOwnership === 'expo';
+if (!isExpoGo) {
+  try {
+    Notifications = require('expo-notifications');
+  } catch {
+    // Native module unavailable — notifications disabled
+  }
+}
+
 // Configure how notifications appear when the app is in the foreground
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
-});
+if (Notifications) {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+    }),
+  });
+}
 
 /**
  * Register for push notifications and return the Expo push token.
  * Saves the token to the user's Firestore document.
  */
 export async function registerForPushNotificationsAsync(): Promise<string | null> {
+  // Notifications unavailable in Expo Go (SDK 53+)
+  if (!Notifications) return null;
+
   // Push notifications only work on physical devices
   if (!Device.isDevice) {
     console.log('Push notifications require a physical device');

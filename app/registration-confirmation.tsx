@@ -116,9 +116,9 @@ export default function RegistrationConfirmationScreen() {
     <SafeAreaView className="flex-1 bg-[#1A1F25]" edges={['top', 'left', 'right']}>
       <ScrollView contentContainerStyle={{ padding: 24 }}>
         <View className="bg-emerald-500/20 rounded-3xl p-6 mb-6">
-          <Text className="text-emerald-400 text-3xl font-bold mb-2">Registration Confirmed</Text>
+          <Text className="text-emerald-400 text-3xl font-bold mb-2">Congratulations</Text>
           <Text className="text-white text-base">
-            You are officially registered. We saved your spot and sent the details to your account.
+            Congratulations on registering for the race. We wish you the best of luck and have a blast!
           </Text>
         </View>
 
@@ -137,18 +137,24 @@ export default function RegistrationConfirmationScreen() {
             <Text className="text-gray-400 text-xs uppercase mb-1">Entry</Text>
             <Text className="text-white text-base">{price}</Text>
           </View>
-          <View className="mb-3">
-            <Text className="text-gray-400 text-xs uppercase mb-1">Start Time</Text>
-            <Text className="text-white text-base">{startTime || 'TBD'}</Text>
-          </View>
-          <View className="mb-3">
-            <Text className="text-gray-400 text-xs uppercase mb-1">Shirt Size</Text>
-            <Text className="text-white text-base">{shirtSize || 'TBD'}</Text>
-          </View>
-          <View>
-            <Text className="text-gray-400 text-xs uppercase mb-1">Bib Number</Text>
-            <Text className="text-white text-base">{bibNumber || 'TBD'}</Text>
-          </View>
+          {startTime ? (
+            <View className="mb-3">
+              <Text className="text-gray-400 text-xs uppercase mb-1">Start Time</Text>
+              <Text className="text-white text-base">{startTime}</Text>
+            </View>
+          ) : null}
+          {shirtSize ? (
+            <View className="mb-3">
+              <Text className="text-gray-400 text-xs uppercase mb-1">Shirt Size</Text>
+              <Text className="text-white text-base">{shirtSize}</Text>
+            </View>
+          ) : null}
+          {bibNumber ? (
+            <View>
+              <Text className="text-gray-400 text-xs uppercase mb-1">Bib Number</Text>
+              <Text className="text-white text-base">{bibNumber}</Text>
+            </View>
+          ) : null}
         </View>
 
         <TouchableOpacity

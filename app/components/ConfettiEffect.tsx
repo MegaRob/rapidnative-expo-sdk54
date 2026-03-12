@@ -1,51 +1,84 @@
 import React, { useEffect, useRef } from 'react';
-import { Animated, View, StyleSheet } from 'react-native';
+import { Animated, Dimensions, View, StyleSheet } from 'react-native';
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 interface ConfettiPieceProps {
   delay: number;
   color: string;
-  left: number;
+  startX: number;
+  startY: number;
+  horizontalDrift: number;
+  size: number;
 }
 
-const ConfettiPiece = ({ delay, color, left }: ConfettiPieceProps) => {
-  const translateY = useRef(new Animated.Value(-50)).current;
+const ConfettiPiece = ({ delay, color, startX, startY, horizontalDrift, size }: ConfettiPieceProps) => {
+  const translateY = useRef(new Animated.Value(startY)).current;
+  const translateX = useRef(new Animated.Value(0)).current;
   const rotate = useRef(new Animated.Value(0)).current;
   const opacity = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
+    const fallDuration = 2500 + Math.random() * 2000;
+
     Animated.parallel([
+      // Fall down
       Animated.timing(translateY, {
-        toValue: 1000,
-        duration: 3000 + delay * 100,
+        toValue: SCREEN_HEIGHT + 50,
+        duration: fallDuration,
+        delay,
         useNativeDriver: true,
       }),
+      // Horizontal sway
+      Animated.sequence([
+        Animated.timing(translateX, {
+          toValue: horizontalDrift,
+          duration: fallDuration / 2,
+          delay,
+          useNativeDriver: true,
+        }),
+        Animated.timing(translateX, {
+          toValue: -horizontalDrift * 0.5,
+          duration: fallDuration / 2,
+          useNativeDriver: true,
+        }),
+      ]),
+      // Spin
       Animated.timing(rotate, {
-        toValue: 360,
-        duration: 2000,
+        toValue: 360 * (Math.random() > 0.5 ? 1 : -1),
+        duration: fallDuration,
+        delay,
         useNativeDriver: true,
       }),
+      // Fade out near bottom
       Animated.timing(opacity, {
         toValue: 0,
-        duration: 3000,
-        delay: 2000,
+        duration: 1000,
+        delay: delay + fallDuration - 1000,
         useNativeDriver: true,
       }),
     ]).start();
-  }, [delay, translateY, rotate, opacity]);
+  }, [delay, translateY, translateX, rotate, opacity, horizontalDrift]);
 
   return (
     <Animated.View
       style={[
         styles.piece,
         {
-          left,
+          left: startX,
+          width: size,
+          height: size * (Math.random() > 0.5 ? 1 : 1.8),
           backgroundColor: color,
+          borderRadius: size > 8 ? 2 : size / 2,
           transform: [
             { translateY },
-            { rotate: rotate.interpolate({
-              inputRange: [0, 360],
-              outputRange: ['0deg', '360deg'],
-            })},
+            { translateX },
+            {
+              rotate: rotate.interpolate({
+                inputRange: [0, 360],
+                outputRange: ['0deg', '360deg'],
+              }),
+            },
           ],
           opacity,
         },
@@ -55,12 +88,15 @@ const ConfettiPiece = ({ delay, color, left }: ConfettiPieceProps) => {
 };
 
 export default function ConfettiEffect() {
-  const colors = ['#10b981', '#8BC34A', '#FFD700', '#FF6B6B', '#4ECDC4', '#FFE66D'];
-  const pieces = Array.from({ length: 50 }, (_, i) => ({
+  const colors = ['#10b981', '#8BC34A', '#FFD700', '#FF6B6B', '#4ECDC4', '#FFE66D', '#A78BFA', '#F472B6'];
+  const pieces = Array.from({ length: 80 }, (_, i) => ({
     id: i,
-    delay: Math.random() * 1000,
+    delay: Math.random() * 800,
     color: colors[Math.floor(Math.random() * colors.length)],
-    left: Math.random() * 100,
+    startX: Math.random() * SCREEN_WIDTH,
+    startY: -20 - Math.random() * 100,
+    horizontalDrift: (Math.random() - 0.5) * 80,
+    size: 6 + Math.random() * 8,
   }));
 
   return (
@@ -70,7 +106,10 @@ export default function ConfettiEffect() {
           key={piece.id}
           delay={piece.delay}
           color={piece.color}
-          left={piece.left}
+          startX={piece.startX}
+          startY={piece.startY}
+          horizontalDrift={piece.horizontalDrift}
+          size={piece.size}
         />
       ))}
     </View>
@@ -80,14 +119,6 @@ export default function ConfettiEffect() {
 const styles = StyleSheet.create({
   piece: {
     position: 'absolute',
-    width: 10,
-    height: 10,
-    borderRadius: 2,
+    top: 0,
   },
 });
-
-
-
-
-
-

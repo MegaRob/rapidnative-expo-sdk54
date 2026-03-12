@@ -1,209 +1,239 @@
-import React, { useState } from 'react';
-import { Modal, View, Text, TextInput, Pressable, Alert, ActivityIndicator } from 'react-native';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { X } from 'lucide-react-native';
+import React, { forwardRef, useState, useCallback, useRef } from 'react';
+import { View, Text, Pressable, Alert, ActivityIndicator } from 'react-native';
+import { BottomSheetTextInput } from '@gorhom/bottom-sheet';
 import * as Location from 'expo-location';
 import { getCoordinatesForCity } from '../../utils/geolocationUtils';
+import StandardBottomSheet, { StandardBottomSheetHandle } from './StandardBottomSheet';
+
+/* ── Public handle exposed via ref ──────────────────────────────────── */
+export interface LocationModalHandle {
+  present: () => void;
+  close: () => void;
+}
 
 interface LocationModalProps {
-  visible: boolean;
   currentLocationName?: string;
-  onClose: () => void;
+  onClose?: () => void;
   onLocationSet: (locationName: string, latitude: number, longitude: number) => void;
 }
 
-export default function LocationModal({
-  visible,
-  currentLocationName,
-  onClose,
-  onLocationSet,
-}: LocationModalProps) {
-  const [manualLocation, setManualLocation] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [mode, setMode] = useState<'select' | 'manual'>('select');
+const LocationModal = forwardRef<LocationModalHandle, LocationModalProps>(
+  ({ currentLocationName, onClose, onLocationSet }, ref) => {
+    const sheetRef = useRef<StandardBottomSheetHandle>(null);
+    const [manualLocation, setManualLocation] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [mode, setMode] = useState<'select' | 'manual'>('select');
 
-  const handleUseGPS = async () => {
-    setLoading(true);
-    try {
-      // Request permissions
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert(
-          'Permission Denied',
-          'Location permission is required to use GPS. Please enable it in your device settings.'
-        );
+    // Expose present / close to parent via ref
+    React.useImperativeHandle(ref, () => ({
+      present: () => {
+        setMode('select');
+        setManualLocation('');
         setLoading(false);
+        sheetRef.current?.present();
+      },
+      close: () => {
+        sheetRef.current?.close();
+      },
+    }));
+
+    const handleUseGPS = async () => {
+      setLoading(true);
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert(
+            'Permission Denied',
+            'Location permission is required to use GPS. Please enable it in your device settings.'
+          );
+          setLoading(false);
+          return;
+        }
+
+        const location = await Location.getCurrentPositionAsync({});
+        const { latitude, longitude } = location.coords;
+
+        const geocode = await Location.reverseGeocodeAsync({ latitude, longitude });
+        if (geocode && geocode.length > 0) {
+          const address = geocode[0];
+          const cityName =
+            address.city && address.region
+              ? `${address.city}, ${address.region}`
+              : address.city || address.region || 'Current Location';
+
+          onLocationSet(cityName, latitude, longitude);
+          sheetRef.current?.close();
+        } else {
+          Alert.alert('Error', 'Could not determine location name. Please try manual entry.');
+        }
+      } catch (error: any) {
+        console.error('Error getting GPS location:', error);
+        Alert.alert('Error', 'Failed to get GPS location. Please try manual entry.');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    const handleManualLocation = async () => {
+      if (!manualLocation.trim()) {
+        Alert.alert('Location Required', 'Please enter a city name.');
         return;
       }
 
-      // Get current location
-      const location = await Location.getCurrentPositionAsync({});
-      const { latitude, longitude } = location.coords;
+      setLoading(true);
 
-      // Reverse geocode to get city name
-      const geocode = await Location.reverseGeocodeAsync({ latitude, longitude });
-      if (geocode && geocode.length > 0) {
-        const address = geocode[0];
-        const cityName = address.city && address.region
-          ? `${address.city}, ${address.region}`
-          : address.city || address.region || 'Current Location';
-
-        onLocationSet(cityName, latitude, longitude);
-        onClose();
-      } else {
-        Alert.alert('Error', 'Could not determine location name. Please try manual entry.');
+      const cachedCoords = getCoordinatesForCity(manualLocation.trim());
+      if (cachedCoords) {
+        onLocationSet(manualLocation.trim(), cachedCoords.lat, cachedCoords.lon);
+        setManualLocation('');
+        setLoading(false);
+        sheetRef.current?.close();
+        return;
       }
-    } catch (error: any) {
-      console.error('Error getting GPS location:', error);
-      Alert.alert('Error', 'Failed to get GPS location. Please try manual entry.');
-    } finally {
-      setLoading(false);
-    }
-  };
 
-  const handleManualLocation = async () => {
-    if (!manualLocation.trim()) {
-      Alert.alert('Location Required', 'Please enter a city name.');
-      return;
-    }
+      try {
+        const results = await Location.geocodeAsync(manualLocation.trim());
+        if (results && results.length > 0) {
+          const { latitude, longitude } = results[0];
+          onLocationSet(manualLocation.trim(), latitude, longitude);
+          setManualLocation('');
+          sheetRef.current?.close();
+        } else {
+          Alert.alert(
+            'Location Not Found',
+            `We couldn't find coordinates for "${manualLocation}". Please try a different city name or use GPS.`
+          );
+        }
+      } catch (error) {
+        console.error('Geocoding error:', error);
+        Alert.alert('Error', 'Failed to look up location. Please try GPS instead.');
+      } finally {
+        setLoading(false);
+      }
+    };
 
-    setLoading(true);
-
-    // First try the hardcoded list for instant results
-    const cachedCoords = getCoordinatesForCity(manualLocation.trim());
-    if (cachedCoords) {
-      onLocationSet(manualLocation.trim(), cachedCoords.lat, cachedCoords.lon);
+    const handleClose = useCallback(() => {
+      setMode('select');
       setManualLocation('');
       setLoading(false);
-      onClose();
-      return;
-    }
+      onClose?.();
+    }, [onClose]);
 
-    // Fall back to device geocoder (handles any address worldwide)
-    try {
-      const results = await Location.geocodeAsync(manualLocation.trim());
-      if (results && results.length > 0) {
-        const { latitude, longitude } = results[0];
-        onLocationSet(manualLocation.trim(), latitude, longitude);
-        setManualLocation('');
-        onClose();
-      } else {
-        Alert.alert(
-          'Location Not Found',
-          `We couldn't find coordinates for "${manualLocation}". Please try a different city name or use GPS.`
-        );
-      }
-    } catch (error) {
-      console.error('Geocoding error:', error);
-      Alert.alert('Error', 'Failed to look up location. Please try GPS instead.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleClose = () => {
-    setMode('select');
-    setManualLocation('');
-    setLoading(false);
-    onClose();
-  };
-
-  return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      transparent={false}
-      onRequestClose={handleClose}
-    >
-      <SafeAreaView className="flex-1 bg-gray-900">
-        {/* Header */}
-        <View className="flex-row justify-between items-center p-4 border-b border-gray-700">
-          <Text className="text-white text-xl font-bold">Set Search Location</Text>
-          <Pressable
-            onPress={handleClose}
-            className="w-10 h-10 items-center justify-center rounded-full bg-gray-800"
-          >
-            <X size={24} color="#fff" />
-          </Pressable>
-        </View>
-
+    return (
+      <StandardBottomSheet
+        ref={sheetRef}
+        title="Set Search Location"
+        snapPoints={['50%', '90%']}
+        onClose={handleClose}
+      >
         {mode === 'select' ? (
-          <View className="flex-1 px-6 pt-8">
+          <View>
             {currentLocationName && (
-              <View className="mb-6">
-                <Text className="text-gray-400 text-sm mb-2">Current Location</Text>
-                <Text className="text-white text-lg font-semibold">{currentLocationName}</Text>
+              <View style={{ marginBottom: 24 }}>
+                <Text style={{ color: '#9CA3AF', fontSize: 14, marginBottom: 8 }}>Current Location</Text>
+                <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '600' }}>{currentLocationName}</Text>
               </View>
             )}
 
-            <Text className="text-white text-lg font-semibold mb-4">Choose Location Method</Text>
+            <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '600', marginBottom: 16 }}>
+              Choose Location Method
+            </Text>
 
             <Pressable
               onPress={handleUseGPS}
               disabled={loading}
-              className="w-full bg-green-500 py-4 rounded-lg items-center mb-4"
+              style={{
+                width: '100%',
+                backgroundColor: '#10B981',
+                paddingVertical: 16,
+                borderRadius: 8,
+                alignItems: 'center',
+                marginBottom: 16,
+              }}
             >
               {loading ? (
                 <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
-                <Text className="text-white text-lg font-bold">Use Current GPS</Text>
+                <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '700' }}>Use Current GPS</Text>
               )}
             </Pressable>
 
             <Pressable
               onPress={() => setMode('manual')}
-              className="w-full bg-gray-700 py-4 rounded-lg items-center"
+              style={{
+                width: '100%',
+                backgroundColor: '#334155',
+                paddingVertical: 16,
+                borderRadius: 8,
+                alignItems: 'center',
+              }}
             >
-              <Text className="text-white text-lg font-semibold">Set Manual Location</Text>
+              <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '600' }}>Set Manual Location</Text>
             </Pressable>
           </View>
         ) : (
-          <KeyboardAwareScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 32 }} keyboardShouldPersistTaps="handled" bottomOffset={40}>
-            <Text className="text-white text-lg font-semibold mb-2">Enter City Name</Text>
-            <Text className="text-gray-400 text-sm mb-4">
+          <View>
+            <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '600', marginBottom: 8 }}>
+              Enter City Name
+            </Text>
+            <Text style={{ color: '#9CA3AF', fontSize: 14, marginBottom: 16 }}>
               Enter a city and state (e.g., "Boulder, CO" or "Denver, CO")
             </Text>
 
-            <TextInput
-              className="bg-gray-800 rounded-lg p-4 text-white text-base mb-4"
+            <BottomSheetTextInput
+              style={{
+                backgroundColor: 'rgba(15, 23, 42, 0.6)',
+                borderRadius: 12,
+                padding: 16,
+                color: '#FFFFFF',
+                fontSize: 16,
+                borderWidth: 1,
+                borderColor: 'rgba(71, 85, 105, 0.5)',
+                marginBottom: 16,
+              }}
               placeholder="e.g., Boulder, CO"
               placeholderTextColor="#9CA3AF"
+              selectionColor="#10B981"
               value={manualLocation}
               onChangeText={setManualLocation}
               autoCapitalize="words"
+              onFocus={() => requestAnimationFrame(() => sheetRef.current?.expand())}
             />
 
-            <View className="flex-row gap-3">
+            <View style={{ flexDirection: 'row', gap: 12 }}>
               <Pressable
                 onPress={() => setMode('select')}
-                className="flex-1 bg-gray-700 py-4 rounded-lg items-center"
+                style={{
+                  flex: 1,
+                  backgroundColor: '#334155',
+                  paddingVertical: 16,
+                  borderRadius: 8,
+                  alignItems: 'center',
+                }}
               >
-                <Text className="text-white text-lg font-semibold">Back</Text>
+                <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '600' }}>Back</Text>
               </Pressable>
 
               <Pressable
                 onPress={handleManualLocation}
                 disabled={!manualLocation.trim()}
-                className={`flex-1 py-4 rounded-lg items-center ${
-                  manualLocation.trim() ? 'bg-green-500' : 'bg-gray-700'
-                }`}
+                style={{
+                  flex: 1,
+                  paddingVertical: 16,
+                  borderRadius: 8,
+                  alignItems: 'center',
+                  backgroundColor: manualLocation.trim() ? '#10B981' : '#334155',
+                }}
               >
-                <Text className="text-white text-lg font-bold">Set Location</Text>
+                <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '700' }}>Set Location</Text>
               </Pressable>
             </View>
-          </KeyboardAwareScrollView>
+          </View>
         )}
-      </SafeAreaView>
-    </Modal>
-  );
-}
+      </StandardBottomSheet>
+    );
+  }
+);
 
-
-
-
-
-
-
-
-
+LocationModal.displayName = 'LocationModal';
+export default LocationModal;

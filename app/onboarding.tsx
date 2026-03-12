@@ -30,7 +30,7 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { auth, db } from "../src/firebaseConfig";
 import { getCoordinatesForCity } from "../utils/geolocationUtils";
-import LocationModal from "./components/LocationModal";
+import LocationModal, { LocationModalHandle } from "./components/LocationModal";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -131,7 +131,7 @@ export default function OnboardingScreen() {
   const [locationName, setLocationName] = useState("");
   const [locationLat, setLocationLat] = useState<number | null>(null);
   const [locationLon, setLocationLon] = useState<number | null>(null);
-  const [showLocationModal, setShowLocationModal] = useState(false);
+  const locationModalRef = useRef<LocationModalHandle>(null);
   const [bio, setBio] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -582,7 +582,7 @@ export default function OnboardingScreen() {
                   borderWidth: 1,
                   borderColor: "rgba(16, 185, 129, 0.3)",
                 }}
-                onPress={() => setShowLocationModal(true)}
+                onPress={() => locationModalRef.current?.present()}
               >
                 <MapPin color="#10B981" size={18} />
                 <Text style={{ color: "#10B981", fontWeight: "700", fontSize: 15 }}>
@@ -703,6 +703,7 @@ export default function OnboardingScreen() {
           showsHorizontalScrollIndicator={false}
           onViewableItemsChanged={onViewableItemsChanged.current}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           scrollEnabled={false}
         />
       </KeyboardAvoidingView>
@@ -816,9 +817,8 @@ export default function OnboardingScreen() {
       </View>
 
       <LocationModal
-        visible={showLocationModal}
+        ref={locationModalRef}
         currentLocationName={locationName}
-        onClose={() => setShowLocationModal(false)}
         onLocationSet={(name, lat, lon) => {
           setLocationName(name);
           setLocationLat(lat);
