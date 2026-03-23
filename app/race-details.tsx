@@ -384,7 +384,7 @@ export default function RaceDetailsScreen() {
 
   const handleShareFinish = async () => {
     try {
-      const shareMessage = `🏆 I just finished ${name}! What an incredible race! #TrailMatch #UltraRunning`;
+      const shareMessage = `🏆 I just finished ${name}! What an incredible race! #TheCollective #UltraRunning`;
       await Share.share({
         message: shareMessage,
         title: `Finished ${name}`,

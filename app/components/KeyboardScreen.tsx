@@ -38,7 +38,7 @@ export default function KeyboardScreen({
       <KeyboardAvoidingView
         style={[{ flex: 1 }, style]}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 100 : 30}
       >
         {children}
       </KeyboardAvoidingView>

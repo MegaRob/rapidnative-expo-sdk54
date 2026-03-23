@@ -25,10 +25,6 @@ SplashScreen.preventAutoHideAsync().catch(() => {
   // Already hidden or not available — safe to ignore
 });
 // import { enableScreens } from "react-native-screens";  // ← DISABLED: may conflict with Expo Router
-import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
-import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { SafeAreaProvider } from "react-native-safe-area-context";
-// import { KeyboardProvider } from "react-native-keyboard-controller";  // ← DISABLED: may require native rebuild
 import { GluestackUIProvider } from "@/components/ui/gluestack-ui-provider";
 import "@/global.css";
 import { useColorScheme } from "@/hooks/use-color-scheme";
@@ -37,6 +33,7 @@ import {
   registerForPushNotificationsAsync,
   savePushTokenToFirestore,
 } from "@/utils/pushNotifications";
+import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import Constants from "expo-constants";
 import { onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
@@ -49,6 +46,9 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 
 // enableScreens(true);  // ← DISABLED
 
@@ -148,32 +148,35 @@ export default function RootLayout() {
 
         const seg = segmentsRef.current;
         const nav = routerRef.current;
-        const inTabs = seg[0] === "(tabs)";
 
-        if (!user && inTabs) {
-          nav.replace("/login");
+        if (!user) {
+          // ── No user session — always redirect to login.
+          //    Guard against redirecting if already on login/signup/registration screens.
+          const onAuthScreen = seg[0] === "login" || seg[0] === "signup" || seg[0] === "registration-confirmation";
+          if (!onAuthScreen) {
+            nav.replace("/login");
+          }
           return;
         }
 
-        if (user) {
-          (async () => {
-            try {
-              const userDoc = await getDoc(doc(db, "users", user.uid));
-              const needsOnboarding =
-                userDoc.exists() && userDoc.data()?.onboardingComplete === false;
-              if (needsOnboarding) {
-                routerRef.current.replace("/onboarding");
-              } else if (seg[0] === "login") {
-                routerRef.current.replace("/");
-              }
-            } catch (e) {
-              console.warn('[RootLayout] Onboarding check failed:', e);
-              if (seg[0] === "login") {
-                routerRef.current.replace("/");
-              }
+        // ── Authenticated user — check onboarding, then send to home if on login
+        (async () => {
+          try {
+            const userDoc = await getDoc(doc(db, "users", user.uid));
+            const needsOnboarding =
+              userDoc.exists() && userDoc.data()?.onboardingComplete === false;
+            if (needsOnboarding) {
+              routerRef.current.replace("/onboarding");
+            } else if (seg[0] === "login" || seg[0] === "signup") {
+              routerRef.current.replace("/");
             }
-          })();
-        }
+          } catch (e) {
+            console.warn('[RootLayout] Onboarding check failed:', e);
+            if (seg[0] === "login" || seg[0] === "signup") {
+              routerRef.current.replace("/");
+            }
+          }
+        })();
       } catch (e) {
         console.error('[RootLayout] Auth listener crashed:', e);
         setAuthChecked(true);
@@ -276,6 +279,7 @@ export default function RootLayout() {
       publishableKey={STRIPE_PUBLISHABLE_KEY}
       merchantIdentifier="merchant.com.beartoe.trailmatch"
     >
+    <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
     <GluestackUIProvider mode="dark">
       <ThemeProvider value={colorScheme === "dark" ? AppDarkTheme : DefaultTheme}>
         {!appReady ? (
@@ -318,7 +322,7 @@ export default function RootLayout() {
               >
                 <View className="w-full max-w-xl bg-slate-900/80 border border-emerald-500/20 rounded-3xl p-6">
                   <Text className="text-emerald-400 text-2xl font-bold mb-4 text-center">
-                    TrailMatch Beta Tester Agreement
+                    The Collective Beta Tester Agreement
                   </Text>
                   <ScrollView
                     className="mb-4"
@@ -399,6 +403,7 @@ export default function RootLayout() {
         )}
       </ThemeProvider>
     </GluestackUIProvider>
+    </KeyboardProvider>
     </StripeProvider>
     </BottomSheetModalProvider>
     </View>

@@ -1,9 +1,43 @@
 import { DistanceFilter, DifficultyFilter, ElevationFilter, RaceFilters } from '../app/components/FilterModal';
 import { Trail } from '../app/(tabs)/index';
 
+/** As specified: "50" present, but k / km / 50k not present; mile-style unit at end. */
+export const FIFTY_MILE_REGEX = /^(?=.*50)(?!.*k|.*km|.*50k).*(mi|miles|m|50m)\b/i;
+
+/** "50" must not be part of 5000, 150, etc. (the base regex alone can still match edge cases). */
+const STANDALONE_50 = /(?<!\d)50(?!\d)/;
+
+/** Split combined UI strings like "5K / 10K", "5k-10k", "5K, 10K" into separate tokens for strict matching. */
+const DISTANCE_TOKEN_SPLIT = /\s*[/|&,;]+\s*|\s+–\s+|\s*-\s*|\s+and\s+/i;
+
+function expandDistanceTokens(distancesOffered?: string[]): string[] {
+  if (!distancesOffered?.length) return [];
+  const tokens: string[] = [];
+  for (const raw of distancesOffered) {
+    String(raw)
+      .split(DISTANCE_TOKEN_SPLIT)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .forEach((t) => tokens.push(t));
+  }
+  return tokens;
+}
+
+function tokenMatchesStrictFiftyMile(token: string): boolean {
+  const t = token.trim();
+  if (!t) return false;
+  return FIFTY_MILE_REGEX.test(t) && STANDALONE_50.test(t);
+}
+
+function isStrictFiftyMileFromDistancesOffered(trail: Trail): boolean {
+  const tokens = expandDistanceTokens(trail.distancesOffered);
+  return tokens.some((d) => tokenMatchesStrictFiftyMile(d));
+}
+
 /**
  * Parse distance string to determine category
  * Handles formats like "100M", "50K", "10M", "5K", etc.
+ * Note: "50mi" filter uses {@link isStrictFiftyMileFromDistancesOffered} only — not this parser.
  */
 function parseDistanceCategory(distancesOffered?: string[]): string[] {
   if (!distancesOffered || distancesOffered.length === 0) {
@@ -14,7 +48,7 @@ function parseDistanceCategory(distancesOffered?: string[]): string[] {
   
   distancesOffered.forEach(dist => {
     const upper = dist.toUpperCase().trim();
-    
+
     // Check for 100M+ (100M, 100 miles, etc.)
     if (upper.includes('100M') || upper.includes('100 MILES') || upper.includes('100MI')) {
       categories.push('100M+');
@@ -113,6 +147,10 @@ function inferDifficulty(elevation: string): string | null {
  */
 function matchesDistanceFilter(trail: Trail, filter: DistanceFilter): boolean {
   if (filter === 'All') return true;
+  // Strict 50-mile only: handled in applyRaceFilters (with debug logging). Never use loose categories here.
+  if (filter === '50mi') {
+    return isStrictFiftyMileFromDistancesOffered(trail);
+  }
 
   const categories = parseDistanceCategory(trail.distancesOffered);
   return categories.includes(filter);
@@ -177,9 +215,18 @@ function matchesDateFilter(trail: Trail, dateFrom: Date | null | undefined, date
  * Apply filters to a list of trails
  */
 export function applyRaceFilters(trails: Trail[], filters: RaceFilters): Trail[] {
-  return trails.filter(trail => {
+  return trails.filter((trail) => {
+    if (filters.distance === '50mi') {
+      const isFiftyMile = isStrictFiftyMileFromDistancesOffered(trail);
+      console.log(
+        `[Filter Debug] Race: ${trail.name} | Distances: ${trail.distancesOffered?.join(', ') ?? ''} | Match: ${isFiftyMile}`
+      );
+      if (!isFiftyMile) return false;
+    } else if (!matchesDistanceFilter(trail, filters.distance)) {
+      return false;
+    }
+
     return (
-      matchesDistanceFilter(trail, filters.distance) &&
       matchesDifficultyFilter(trail, filters.difficulty) &&
       matchesElevationFilter(trail, filters.elevation) &&
       matchesDateFilter(trail, filters.dateFrom, filters.dateTo)

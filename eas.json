@@ -15,11 +15,24 @@
       }
     },
     "production": {
-      "autoIncrement": true
+      "distribution": "store",
+      "credentialsSource": "remote",
+      "autoIncrement": true,
+      "env": {
+        "NODE_ENV": "production"
+      },
+      "android": {
+        "buildType": "app-bundle",
+        "gradleCommand": ":app:bundleRelease"
+      }
     }
   },
   "submit": {
     "production": {
+      "android": {
+        "applicationId": "com.robertolsen.thecollective",
+        "track": "production"
+      },
       "ios": {
         "ascAppId": "6755617285"
       }

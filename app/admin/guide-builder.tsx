@@ -417,7 +417,7 @@ export default function GuideBuilder({ raceId, race }: GuideBuilderProps) {
               }))
             }
             className="bg-slate-950 border border-slate-800 rounded-[2rem] px-4 py-3 text-slate-100"
-            placeholder="race@trailmatch.com"
+            placeholder="race@thecollective.com"
             placeholderTextColor="#64748b"
             keyboardType="email-address"
             autoCapitalize="none"

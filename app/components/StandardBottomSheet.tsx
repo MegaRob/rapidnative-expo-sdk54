@@ -6,7 +6,8 @@ import React, {
   useMemo,
   useRef,
 } from 'react';
-import { Keyboard, Platform, Text, TouchableOpacity, View } from 'react-native';
+import type { StyleProp, ViewStyle } from 'react-native';
+import { Text, TouchableOpacity, View } from 'react-native';
 import {
   BottomSheetBackdrop,
   BottomSheetModal,
@@ -49,6 +50,10 @@ export interface StandardBottomSheetProps {
    * Use `BottomSheetFooter` from `@gorhom/bottom-sheet` inside your render function.
    */
   footerComponent?: React.FC<BottomSheetFooterProps>;
+  /** Optional style for the scroll content (e.g. extra paddingBottom for keyboard). */
+  contentContainerStyle?: StyleProp<ViewStyle>;
+  /** Optional offset above the keyboard (if supported by the library). */
+  keyboardOffset?: number;
 }
 
 /**
@@ -80,6 +85,8 @@ const StandardBottomSheet = forwardRef<
       closeOnBackdropPress = true,
       enablePanDownToClose = true,
       footerComponent,
+      contentContainerStyle,
+      keyboardOffset,
     },
     ref
   ) => {
@@ -107,20 +114,6 @@ const StandardBottomSheet = forwardRef<
       close: () => bottomSheetRef.current?.dismiss(),
       expand: () => bottomSheetRef.current?.snapToIndex(snapPoints.length - 1),
     }));
-
-    /* ── Keyboard auto-snap: jump to top snap when keyboard shows ── */
-    useEffect(() => {
-      const showEvent =
-        Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-      const topIndex = snapPoints.length - 1;
-      const sub = Keyboard.addListener(showEvent, () => {
-        // Only snap if the sheet is open AND not already at the top snap point
-        if (currentIndex.current >= 0 && currentIndex.current < topIndex) {
-          bottomSheetRef.current?.snapToIndex(topIndex);
-        }
-      });
-      return () => sub.remove();
-    }, [snapPoints]);
 
     /* ── Callbacks ─────────────────────────────────────────────────── */
     const handleDismiss = useCallback(() => {
@@ -164,6 +157,7 @@ const StandardBottomSheet = forwardRef<
         keyboardBehavior="fillParent"
         keyboardBlurBehavior="restore"
         android_keyboardInputMode="adjustResize"
+        {...(keyboardOffset != null && { keyboardOffset })}
         backdropComponent={renderBackdrop}
         footerComponent={footerComponent}
         backgroundStyle={{
@@ -176,8 +170,12 @@ const StandardBottomSheet = forwardRef<
           width: 40,
         }}
       >
+        {/* BottomSheetScrollView: keyboard-aware layout so content can scroll when keyboard is open */}
         <BottomSheetScrollView
-          contentContainerStyle={{ paddingHorizontal: 24, paddingBottom: 40 }}
+          contentContainerStyle={[
+            { paddingHorizontal: 24, paddingBottom: 40 },
+            contentContainerStyle,
+          ]}
           keyboardShouldPersistTaps="handled"
         >
           {/* ── Header ──────────────────────────────────────────────── */}

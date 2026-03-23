@@ -494,7 +494,7 @@ export default function RegistrationForm({
           paymentIntentClientSecret: clientSecret,
           customerEphemeralKeySecret: ephemeralKey,
           customerId: customerId,
-          merchantDisplayName: 'TrailMatch',
+          merchantDisplayName: 'The Collective',
           allowsDelayedPaymentMethods: false,
           style: 'alwaysDark',
         });

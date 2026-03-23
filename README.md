@@ -1,6 +1,6 @@
-# TrailMatch 🏃‍♂️🏔️
+# The Collective 🏃‍♂️🏔️
 
-TrailMatch is a dynamic trail running app that helps runners discover exciting races and connect with fellow trail enthusiasts. Using an intuitive swipe interface, users can explore curated trail races, view detailed course information, and match with potential running partners.
+The Collective is a dynamic trail running app that helps runners discover exciting races and connect with fellow trail enthusiasts. Using an intuitive swipe interface, users can explore curated trail races, view detailed course information, and match with potential running partners.
 
 ## Style Guide
 
@@ -55,12 +55,12 @@ TrailMatch is a dynamic trail running app that helps runners discover exciting r
 
 1. Clone the repository
 ```bash
-git clone https://github.com/yourusername/trailmatch.git
+git clone https://github.com/yourusername/the-collective.git
 ```
 
 2. Install dependencies
 ```bash
-cd trailmatch
+cd the-collective
 npm install
 ```
 

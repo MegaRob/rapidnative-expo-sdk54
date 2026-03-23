@@ -159,7 +159,7 @@ export default function LoginScreen() {
             <Mountain color="#10B981" size={40} />
           </View>
           <Text style={{ fontSize: 32, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.5 }}>
-            TrailMatch
+            The Collective
           </Text>
           <Text style={{ fontSize: 15, color: '#94A3B8', marginTop: 6 }}>
             Find your next trail adventure

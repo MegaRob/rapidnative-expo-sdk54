@@ -1,13 +1,14 @@
 {
   "expo": {
-    "name": "TrailMatch",
-    "slug": "my-app",
+    "name": "The Collective",
+    "slug": "the-collective",
+    "owner": "beartoe",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "trailmatch",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.beartoe.myapp",
@@ -19,6 +20,15 @@
       ]
     },
     "android": {
+      "newArchEnabled": true,
+      "package": "com.robertolsen.thecollective",
+      "versionCode": 1,
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#1A1F25",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -27,7 +37,6 @@
       },
       "edgeToEdgeEnabled": false,
       "predictiveBackGestureEnabled": false,
-      "package": "com.beartoe.myapp",
       "softwareKeyboardLayoutMode": "resize",
       "intentFilters": [
         {
@@ -40,7 +49,10 @@
               "pathPrefix": "/race/"
             }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ]
     },
@@ -91,7 +103,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "f296dffd-789f-40a0-b962-2a3ca373f529"
+        "projectId": "c2835d8c-92ce-45a2-8630-71ade3a7689d"
       }
     }
   }

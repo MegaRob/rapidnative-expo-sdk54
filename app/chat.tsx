@@ -1,3 +1,4 @@
+import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import {
   addDoc,
@@ -15,11 +16,29 @@ import {
   Timestamp,
   writeBatch
 } from 'firebase/firestore';
-import { ArrowLeft, Check, MoreVertical, Send, X } from 'lucide-react-native';
+import { ArrowLeft, Check, MoreVertical, RefreshCw, Send as SendIcon, X } from 'lucide-react-native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Image, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { Bubble, GiftedChat, IMessage } from 'react-native-gifted-chat';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import {
+  Bubble,
+  Composer,
+  GiftedChat,
+  IMessage,
+  InputToolbar,
+  Send,
+} from 'react-native-gifted-chat';
+import type { InputToolbarProps } from 'react-native-gifted-chat/lib/InputToolbar';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { auth, db } from '../src/firebaseConfig';
 import { blockUser, isUserBlocked } from '../utils/blockUtils';
 import ReportModal, { ReportModalHandle } from './components/ReportModal';
@@ -51,122 +70,252 @@ const coerceMessageStatus = (value: unknown): MessageStatus => {
   }
 };
 
+const ONLINE_WINDOW_MS = 5 * 60 * 1000;
+
+/** User-facing copy for Firestore failures (used with Alert.alert). */
+function firestoreUserMessage(
+  error: unknown,
+  fallback = 'Something went wrong. Check your connection and try again.'
+): string {
+  const code = (error as { code?: string })?.code;
+  if (code === 'permission-denied') {
+    return "You don't have permission to access this. Try again or go back and reopen the chat.";
+  }
+  if (code === 'unavailable') {
+    return 'The service is temporarily unavailable. Please try again in a moment.';
+  }
+  return fallback;
+}
+
+function parseLastActiveMs(data: Record<string, unknown> | undefined): number | null {
+  try {
+    if (!data) return null;
+    const raw =
+      data.lastActive ??
+      data.lastActiveAt ??
+      data.lastSeen ??
+      data.lastOnlineAt;
+    if (raw == null) return null;
+
+    if (raw instanceof Timestamp) {
+      return raw.toMillis();
+    }
+
+    if (typeof raw === 'object' && raw !== null) {
+      const t = raw as {
+        toMillis?: () => number;
+        toDate?: () => Date;
+        seconds?: number;
+        nanoseconds?: number;
+      };
+      if (typeof t.toMillis === 'function') return t.toMillis();
+      if (typeof t.toDate === 'function') return t.toDate().getTime();
+      if (typeof t.seconds === 'number') {
+        const ns = typeof t.nanoseconds === 'number' ? t.nanoseconds : 0;
+        return t.seconds * 1000 + Math.floor(ns / 1e6);
+      }
+    }
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return raw > 1e12 ? raw : raw * 1000;
+    }
+    if (typeof raw === 'string') {
+      const parsed = Date.parse(raw);
+      if (!Number.isNaN(parsed)) return parsed;
+    }
+    if (raw instanceof Date) return raw.getTime();
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function formatPresenceLabel(lastMs: number | null): { online: boolean; label: string } {
+  if (lastMs == null) return { online: false, label: 'Offline' };
+  const diffMs = Date.now() - lastMs;
+  if (diffMs <= ONLINE_WINDOW_MS) return { online: true, label: 'Online' };
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 60) return { online: false, label: `Active ${mins}m ago` };
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return { online: false, label: `Active ${hours}h ago` };
+  const days = Math.floor(hours / 24);
+  return { online: false, label: `Active ${days}d ago` };
+}
+
 const markMessagesReceived = async (
   chatId: string,
   currentUserId: string,
   docs: QueryDocumentSnapshot[]
 ) => {
-  const batch = writeBatch(db);
-  let hasUpdates = false;
+  try {
+    const batch = writeBatch(db);
+    let hasUpdates = false;
 
-  docs.forEach((messageDoc) => {
-    const data = messageDoc.data();
-    const senderId = data.userId || data.user?._id || data.user;
-    const status = data.status;
+    docs.forEach((messageDoc) => {
+      const data = messageDoc.data();
+      const senderId = data.userId || data.user?._id || data.user;
+      const status = data.status;
 
-    if (senderId && senderId !== currentUserId && status !== 'received') {
-      batch.update(messageDoc.ref, { status: 'received' });
-      hasUpdates = true;
+      if (senderId && senderId !== currentUserId && status !== 'received') {
+        batch.update(messageDoc.ref, { status: 'received' });
+        hasUpdates = true;
+      }
+    });
+
+    if (hasUpdates) {
+      await batch.commit();
     }
-  });
-
-  if (hasUpdates) {
-    await batch.commit();
+  } catch (e) {
+    if (__DEV__) {
+      console.error('markMessagesReceived failed:', e);
+    }
   }
 };
 
+type MemoizedBubbleProps = {
+  onRetryFailedMessage?: (msg: ExtendedIMessage) => void;
+};
+
 // Memoized message bubble component
-const MemoizedBubble = React.memo((props: any) => {
+const MemoizedBubble = React.memo((props: any & MemoizedBubbleProps) => {
   const user = auth.currentUser;
-  
-  if (!props || !user?.uid) {
+  const { onRetryFailedMessage, ...bubbleProps } = props;
+
+  if (!bubbleProps || !user?.uid) {
     return null;
   }
-  
+
+  const statusValue = bubbleProps?.currentMessage?.status as MessageStatus | undefined;
+  const bubbleOpacity =
+    statusValue === 'sending' ? 0.7 : statusValue === 'error' ? 1 : 1;
+  const isCurrentUser = bubbleProps?.currentMessage?.user?._id === user?.uid;
+
+  const bubbleShadow = Platform.select({
+    ios: {
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.18,
+      shadowRadius: 2.5,
+    },
+    android: {
+      elevation: 1,
+    },
+    default: {},
+  });
+
   try {
     return (
-      <Bubble
-        {...props}
-        wrapperStyle={{
-          right: {
-            backgroundColor: '#8BC34A',
-            borderRadius: 12,
-            paddingHorizontal: 12,
-            paddingVertical: 8,
-            marginRight: 8,
-          },
-          left: {
-            backgroundColor: '#1F2937',
-            borderRadius: 12,
-            paddingHorizontal: 12,
-            paddingVertical: 8,
-            marginLeft: 8,
-          },
-        }}
-        textStyle={{
-          right: {
-            color: '#FFFFFF',
-            fontSize: 16,
-          },
-          left: {
-            color: '#FFFFFF',
-            fontSize: 16,
-          },
-        }}
-        renderTime={(timeProps: any) => {
-          try {
-            const isCurrentUser = timeProps?.currentMessage?.user?._id === user?.uid;
-            const statusValue = timeProps?.currentMessage?.status as MessageStatus | undefined;
-            const statusLabel =
-              statusValue === 'sending'
-                ? 'Sending'
-                : statusValue === 'received'
-                ? 'Received'
-                : statusValue === 'error'
-                ? 'Failed'
-                : statusValue === 'pending'
-                ? 'Pending'
-                : statusValue === 'sent'
-                ? 'Sent'
-                : '';
-            return (
-              <Text style={[
-                styles.timestampText,
-                isCurrentUser ? styles.timestampTextCurrentUser : styles.timestampTextOtherUser
-              ]}>
-                {timeProps?.currentMessage?.createdAt &&
-                  new Date(timeProps.currentMessage.createdAt).toLocaleTimeString([], {
+      <View style={{ opacity: bubbleOpacity }}>
+        <Bubble
+          {...bubbleProps}
+          wrapperStyle={{
+            right: {
+              backgroundColor: '#10B981',
+              borderRadius: 20,
+              borderBottomRightRadius: 4,
+              paddingHorizontal: 16,
+              paddingVertical: 12,
+              marginRight: 8,
+              borderWidth: statusValue === 'error' && isCurrentUser ? 1 : 0,
+              borderColor: statusValue === 'error' ? 'rgba(239,68,68,0.9)' : 'transparent',
+              ...bubbleShadow,
+            },
+            left: {
+              backgroundColor: '#1F2937',
+              borderRadius: 20,
+              borderBottomLeftRadius: 4,
+              paddingHorizontal: 16,
+              paddingVertical: 12,
+              marginLeft: 8,
+              ...bubbleShadow,
+            },
+          }}
+          textStyle={{
+            right: {
+              color: '#FFFFFF',
+              fontSize: 16,
+              lineHeight: 22,
+            },
+            left: {
+              color: '#FFFFFF',
+              fontSize: 16,
+              lineHeight: 22,
+            },
+          }}
+          renderTime={(timeProps: any) => {
+            try {
+              const isMe = timeProps?.currentMessage?.user?._id === user?.uid;
+              const sv = timeProps?.currentMessage?.status as MessageStatus | undefined;
+              const statusLabel =
+                sv === 'sending'
+                  ? 'Sending…'
+                  : sv === 'received'
+                  ? 'Received'
+                  : sv === 'error'
+                  ? 'Not sent'
+                  : sv === 'pending'
+                  ? 'Pending'
+                  : sv === 'sent'
+                  ? 'Sent'
+                  : '';
+              const timeStr = timeProps?.currentMessage?.createdAt
+                ? new Date(timeProps.currentMessage.createdAt).toLocaleTimeString([], {
                     hour: '2-digit',
                     minute: '2-digit',
-                  })}
-                {isCurrentUser && statusLabel ? ` · ${statusLabel}` : ''}
-              </Text>
-            );
-          } catch (error) {
-            console.error('Error rendering time:', error);
-            return null;
-          }
-        }}
-      />
+                  })
+                : '';
+              return (
+                <View
+                  style={{
+                    alignSelf: isMe ? 'flex-end' : 'flex-start',
+                    marginTop: 2,
+                    maxWidth: '100%',
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.timestampText,
+                      isMe ? styles.timestampTextCurrentUser : styles.timestampTextOtherUser,
+                    ]}
+                  >
+                    {timeStr}
+                    {isMe && statusLabel ? ` · ${statusLabel}` : ''}
+                  </Text>
+                  {isMe && sv === 'error' && onRetryFailedMessage && timeProps?.currentMessage && (
+                    <Pressable
+                      hitSlop={8}
+                      onPress={() => onRetryFailedMessage(timeProps.currentMessage as ExtendedIMessage)}
+                      style={styles.retryRow}
+                    >
+                      <RefreshCw size={14} color="#FCA5A5" />
+                      <Text style={styles.retryText}>Tap to retry</Text>
+                    </Pressable>
+                  )}
+                </View>
+              );
+            } catch {
+              return null;
+            }
+          }}
+        />
+      </View>
     );
-  } catch (error) {
-    console.error('Error rendering bubble:', error);
+  } catch {
     return null;
   }
 }, (prevProps, nextProps) => {
-  // Custom comparison for memoization
   return (
     prevProps?.currentMessage?._id === nextProps?.currentMessage?._id &&
     prevProps?.currentMessage?.text === nextProps?.currentMessage?.text &&
-    prevProps?.currentMessage?.status === nextProps?.currentMessage?.status
+    prevProps?.currentMessage?.status === nextProps?.currentMessage?.status &&
+    prevProps?.onRetryFailedMessage === nextProps?.onRetryFailedMessage
   );
 });
 
 export default function ChatScreen() {
+  const insets = useSafeAreaInsets();
   const [messages, setMessages] = useState<ExtendedIMessage[]>([]);
   const [username, setUsername] = useState('User');
   const [buddyAvatarUrl, setBuddyAvatarUrl] = useState<string | null>(null);
-  const [inputText, setInputText] = useState('');
   const userProfileRef = useRef<UserProfileModalHandle>(null);
   const reportModalRef = useRef<ReportModalHandle>(null);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
@@ -179,6 +328,15 @@ export default function ChatScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const lastVisibleDocRef = useRef<QueryDocumentSnapshot | null>(null);
   const userProfileCache = useRef<Map<string, { name: string; avatarUrl: string | null }>>(new Map());
+  const [buddyPresence, setBuddyPresence] = useState<{ online: boolean; label: string }>({
+    online: false,
+    label: 'Offline',
+  });
+  /** Avoid spamming Alert when Firestore listeners retry */
+  const chatDocListenerAlertedRef = useRef(false);
+  const messagesListenerAlertedRef = useRef(false);
+  const markChatViewedAlertRef = useRef(false);
+  const initialMessagesAlertRef = useRef(false);
   const { buddyId, buddyName, chatId: chatIdParam } = useLocalSearchParams();
   const navigation = useNavigation();
   const router = useRouter();
@@ -194,14 +352,22 @@ export default function ChatScreen() {
   // Use buddyId from params, or fall back to derivedBuddyId from chat document
   const activeBuddyId = buddyIdString || derivedBuddyId;
 
+  // Reset one-shot Firestore alerts when opening a different chat
+  useEffect(() => {
+    chatDocListenerAlertedRef.current = false;
+    messagesListenerAlertedRef.current = false;
+    markChatViewedAlertRef.current = false;
+    initialMessagesAlertRef.current = false;
+  }, [chatId]);
+
   // Hide the default header since we're using a custom one
   useEffect(() => {
     try {
       navigation.setOptions({
         headerShown: false,
       });
-    } catch (error) {
-      console.error('Error setting navigation options:', error);
+    } catch {
+      // Non-critical
     }
   }, [navigation]);
 
@@ -245,24 +411,19 @@ export default function ChatScreen() {
             setChatStatus(null);
             setIsRequestSender(false);
           }
-        } catch (error: any) {
-          console.error('Error processing chat document:', error);
-          // If it's a permission error, the chat might not exist yet or user doesn't have access
-          if (error?.code === 'permission-denied') {
-            console.warn('Permission denied reading chat document - chat may not exist yet');
-            setChatStatus(null);
-            setIsRequestSender(false);
-          } else {
-            setChatStatus(null);
-            setIsRequestSender(false);
+        } catch (error: unknown) {
+          if (!chatDocListenerAlertedRef.current) {
+            chatDocListenerAlertedRef.current = true;
+            Alert.alert('Chat status', firestoreUserMessage(error));
           }
+          setChatStatus(null);
+          setIsRequestSender(false);
         }
       },
-      (error: any) => {
-        console.error('Error listening to chat document:', error);
-        // Handle permission errors gracefully
-        if (error?.code === 'permission-denied') {
-          console.warn('Permission denied - chat may not exist yet or user lacks access');
+      (error: unknown) => {
+        if (!chatDocListenerAlertedRef.current) {
+          chatDocListenerAlertedRef.current = true;
+          Alert.alert('Chat status', firestoreUserMessage(error));
         }
         setChatStatus(null);
         setIsRequestSender(false);
@@ -325,12 +486,11 @@ export default function ChatScreen() {
           
           // Marked chat as viewed
         }
-      } catch (error: any) {
-        // Log but don't fail - notification clearing is secondary
-        if (error?.code === 'permission-denied') {
-          console.warn('Permission denied marking chat as viewed (expected due to security rules)');
-        } else {
-          console.warn('Failed to mark chat as viewed:', error);
+      } catch (error: unknown) {
+        const code = (error as { code?: string })?.code;
+        if (code !== 'permission-denied' && !markChatViewedAlertRef.current) {
+          markChatViewedAlertRef.current = true;
+          Alert.alert('Could not update read status', firestoreUserMessage(error));
         }
       }
     };
@@ -346,11 +506,17 @@ export default function ChatScreen() {
   // Fetch the user's username
   useEffect(() => {
     const fetchUsername = async () => {
-      if (user) {
+      if (!user) return;
+      try {
         const userDoc = await getDoc(doc(db, 'users', user.uid));
         if (userDoc.exists()) {
           setUsername(userDoc.data().username || 'User');
         }
+      } catch (e) {
+        if (__DEV__) {
+          console.error('fetchUsername failed:', e);
+        }
+        setUsername('User');
       }
     };
     fetchUsername();
@@ -370,13 +536,64 @@ export default function ChatScreen() {
           // Check if user is blocked
           const blocked = await isUserBlocked(activeBuddyId);
           setIsBlocked(blocked);
-        } catch (error) {
-          console.error('Error fetching buddy avatar:', error);
+        } catch (e) {
+          if (__DEV__) {
+            console.error('Error fetching buddy avatar:', e);
+          }
         }
       }
     };
     fetchBuddyAvatar();
   }, [activeBuddyId]);
+
+  // Real-time presence: listen to buddy's user doc in `users` for lastActive / lastSeen
+  useEffect(() => {
+    if (!activeBuddyId) {
+      setBuddyPresence({ online: false, label: 'Offline' });
+      return;
+    }
+
+    const buddyUserRef = doc(db, 'users', activeBuddyId);
+    const unsubscribe = onSnapshot(
+      buddyUserRef,
+      (snap) => {
+        try {
+          if (!snap.exists()) {
+            setBuddyPresence({ online: false, label: 'Offline' });
+            return;
+          }
+          const data = snap.data() as Record<string, unknown>;
+          const lastMs = parseLastActiveMs(data);
+          setBuddyPresence(formatPresenceLabel(lastMs));
+        } catch {
+          setBuddyPresence({ online: false, label: 'Offline' });
+        }
+      },
+      () => {
+        setBuddyPresence({ online: false, label: 'Offline' });
+      }
+    );
+
+    return () => unsubscribe();
+  }, [activeBuddyId]);
+
+  // Heartbeat: while this screen is focused, refresh lastActive every 60s (cleared on blur / unmount)
+  useFocusEffect(
+    useCallback(() => {
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
+      const userRef = doc(db, 'users', uid);
+      const pulse = () => {
+        setDoc(userRef, { lastActive: Timestamp.now() }, { merge: true }).catch(() => {
+          /* heartbeat is best-effort */
+        });
+      };
+      pulse();
+      const interval = setInterval(pulse, 60 * 1000);
+      return () => clearInterval(interval);
+    }, [])
+  );
 
   // Load initial messages with pagination
   const loadInitialMessages = useCallback(async () => {
@@ -438,8 +655,10 @@ export default function ChatScreen() {
                 avatarUrl: userData.avatarUrl || userData.photoURL || null,
               });
             }
-          } catch (error) {
-            console.error(`Error fetching profile for ${userId}:`, error);
+          } catch (e) {
+            if (__DEV__) {
+              console.error(`Error fetching profile for ${userId}:`, e);
+            }
           }
         });
         await Promise.all(profilePromises);
@@ -458,7 +677,10 @@ export default function ChatScreen() {
       lastVisibleDocRef.current = snapshot.docs[snapshot.docs.length - 1];
       setHasMoreMessages(snapshot.docs.length === 25);
     } catch (error) {
-      console.error('Error loading initial messages:', error);
+      if (!initialMessagesAlertRef.current) {
+        initialMessagesAlertRef.current = true;
+        Alert.alert('Messages', firestoreUserMessage(error, 'Could not load messages. Pull to refresh or try again later.'));
+      }
       setMessages([]);
     }
   }, [chatId, user]);
@@ -487,8 +709,8 @@ export default function ChatScreen() {
 
           const currentUserId = auth.currentUser?.uid || user?.uid;
           if (currentUserId) {
-            markMessagesReceived(chatId, currentUserId, snapshot.docs).catch((error) => {
-              console.error('Failed to mark message received:', error);
+            markMessagesReceived(chatId, currentUserId, snapshot.docs).catch(() => {
+              /* non-blocking */
             });
           }
           
@@ -527,20 +749,28 @@ export default function ChatScreen() {
                       : msg
                   ));
                 }
-              }).catch(err => console.error('Error fetching user profile:', err));
+              }).catch(() => {
+                /* profile name stays empty until next update */
+              });
             }
             
             return [newMessage, ...prev];
           });
         }, 
         (error) => {
-          console.error('Error listening to messages:', error);
+          if (!messagesListenerAlertedRef.current) {
+            messagesListenerAlertedRef.current = true;
+            Alert.alert('Live updates', firestoreUserMessage(error, 'Could not subscribe to new messages.'));
+          }
         }
       );
 
       return () => unsubscribe();
     } catch (error) {
-      console.error('Error setting up messages listener:', error);
+      if (!messagesListenerAlertedRef.current) {
+        messagesListenerAlertedRef.current = true;
+        Alert.alert('Live updates', firestoreUserMessage(error, 'Could not subscribe to new messages.'));
+      }
       return () => {};
     }
   }, [chatId, user]);
@@ -609,8 +839,10 @@ export default function ChatScreen() {
                 avatarUrl: userData.avatarUrl || userData.photoURL || null,
               });
             }
-          } catch (error) {
-            console.error(`Error fetching profile for ${userId}:`, error);
+          } catch (e) {
+            if (__DEV__) {
+              console.error(`Error fetching profile for ${userId}:`, e);
+            }
           }
         });
         await Promise.all(profilePromises);
@@ -629,7 +861,7 @@ export default function ChatScreen() {
       lastVisibleDocRef.current = snapshot.docs[snapshot.docs.length - 1];
       setHasMoreMessages(snapshot.docs.length === 25);
     } catch (error) {
-      console.error('Error loading more messages:', error);
+      Alert.alert('Messages', firestoreUserMessage(error, 'Could not load older messages.'));
     } finally {
       setLoadingMore(false);
     }
@@ -660,7 +892,7 @@ export default function ChatScreen() {
     // For new chats, we might not have activeBuddyId yet, so we need to get it from params or construct it
     const otherUserId = activeBuddyId || buddyIdString;
     if (!otherUserId) {
-      console.error('Cannot send message: no buddy ID available');
+      Alert.alert('Cannot send', 'Missing chat partner. Go back and open the chat again.');
       return;
     }
     
@@ -669,7 +901,7 @@ export default function ChatScreen() {
     const currentUserId = auth.currentUser?.uid || user?.uid;
     
     if (!currentUserId) {
-      console.error('Cannot send message: no authenticated user');
+      Alert.alert('Cannot send', 'You are not signed in. Please log in and try again.');
       return;
     }
 
@@ -721,30 +953,124 @@ export default function ChatScreen() {
         lastMessageAt: Timestamp.now(),
       }, { merge: true });
     } catch (error) {
-      // Rollback optimistic update on error
-      setMessages(prev => prev.filter(msg => msg.tempId !== tempId));
-      console.error("CRITICAL ERROR: Failed to send message:", error);
-      Alert.alert("Error", "Failed to send message. Please check connection.");
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.tempId === tempId ? { ...msg, status: 'error' as MessageStatus } : msg
+        )
+      );
+      Alert.alert('Message not sent', firestoreUserMessage(error));
       return;
     }
 
-    // Notification write (can fail silently)
+    // Notification write (best-effort)
     try {
       const otherUserDocRef = doc(db, 'users', otherUserId);
       await setDoc(otherUserDocRef, {
         hasUnreadMessages: true
       }, { merge: true });
-    } catch (error: any) {
-      if (error?.code !== 'permission-denied') {
-        console.warn("Failed to set notification flag:", error);
+    } catch (error: unknown) {
+      const code = (error as { code?: string })?.code;
+      if (code !== 'permission-denied' && __DEV__) {
+        console.warn('Failed to set notification flag:', error);
       }
     }
   }, [chatId, user, activeBuddyId, buddyIdString, chatStatus, isRequestSender, isBlocked, username]);
 
+  const retryFailedMessage = useCallback(
+    async (failedMsg: ExtendedIMessage) => {
+      if (!chatId || !user?.uid) return;
+      if (failedMsg.user._id !== user.uid) return;
+      if (isBlocked) {
+        Alert.alert('User Blocked', 'You cannot send messages to a blocked user.');
+        return;
+      }
+      if (chatStatus === 'declined') {
+        Alert.alert('Chat Declined', 'This chat request has been declined.');
+        return;
+      }
+      if (chatStatus === 'pending' && isRequestSender) {
+        Alert.alert(
+          'Pending Request',
+          'The recipient must accept your chat request before you can send more messages.'
+        );
+        return;
+      }
+
+      const text = failedMsg.text?.trim();
+      if (!text) return;
+
+      const otherUserId = activeBuddyId || buddyIdString;
+      if (!otherUserId) return;
+
+      const stableTempId = failedMsg.tempId ?? String(failedMsg._id);
+
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.tempId === stableTempId || msg._id === failedMsg._id
+            ? { ...msg, status: 'sending' as MessageStatus, tempId: stableTempId }
+            : msg
+        )
+      );
+
+      try {
+        const docRef = await addDoc(collection(db, 'chats', chatId, 'messages'), {
+          text,
+          createdAt: Timestamp.now(),
+          userId: user.uid,
+          status: 'sent',
+        });
+
+        setMessages((prev) => {
+          const updated = prev.map((msg) =>
+            msg.tempId === stableTempId || msg._id === failedMsg._id
+              ? { ...msg, _id: docRef.id, status: 'sent' as MessageStatus, tempId: undefined }
+              : msg
+          );
+          const seen = new Set<string>();
+          return updated.filter((msg) => {
+            const id = String(msg._id);
+            if (seen.has(id)) return false;
+            seen.add(id);
+            return true;
+          });
+        });
+
+        await setDoc(
+          doc(db, 'chats', chatId),
+          {
+            userIds: [user.uid, otherUserId],
+            lastMessageAt: Timestamp.now(),
+          },
+          { merge: true }
+        );
+
+        try {
+          await setDoc(doc(db, 'users', otherUserId), { hasUnreadMessages: true }, { merge: true });
+        } catch (e: unknown) {
+          const code = (e as { code?: string })?.code;
+          if (code !== 'permission-denied' && __DEV__) {
+            console.warn('Failed to set notification flag:', e);
+          }
+        }
+      } catch (error) {
+        Alert.alert('Message not sent', firestoreUserMessage(error));
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.tempId === stableTempId || msg._id === failedMsg._id
+              ? { ...msg, status: 'error' as MessageStatus }
+              : msg
+          )
+        );
+      }
+    },
+    [chatId, user, activeBuddyId, buddyIdString, chatStatus, isRequestSender, isBlocked]
+  );
+
   // Custom render function for message bubbles (using memoized component)
-  const renderBubble = useCallback((props: any) => {
-    return <MemoizedBubble {...props} />;
-  }, []);
+  const renderBubble = useCallback(
+    (props: any) => <MemoizedBubble {...props} onRetryFailedMessage={retryFailedMessage} />,
+    [retryFailedMessage]
+  );
 
   // Custom render function for messages (to add avatar for other user)
   const renderMessage = (props: any) => {
@@ -775,94 +1101,140 @@ export default function ChatScreen() {
           </View>
         );
       }
-    } catch (error) {
-      console.error('Error rendering message:', error);
+    } catch {
       return null;
     }
   };
 
-  // Hide GiftedChat's input toolbar - we'll use custom footer instead
-  const renderInputToolbar = () => null;
-
-  // Handle send button press
-  const handleSend = () => {
-    if (!inputText.trim() || !user || !chatId) return;
-    
-    // Block sending if user is blocked
-    if (isBlocked) {
-      Alert.alert("User Blocked", "You cannot send messages to a blocked user.");
-      return;
-    }
-    
-    // Block sending if chat is declined
-    if (chatStatus === 'declined') {
-      Alert.alert("Chat Declined", "This chat request has been declined.");
-      return;
-    }
-    
-    // Block sending if request is pending and user is the sender
-    if (chatStatus === 'pending' && isRequestSender) {
-      Alert.alert("Pending Request", "The recipient must accept your chat request before you can send more messages.");
-      return;
-    }
-    
-    const messageText = inputText.trim();
-    setInputText(''); // Clear input
-    
-    // Create message object
-    if (!user?.uid) {
-      console.error('Cannot send message: user not authenticated');
-      return;
-    }
-    
-    const newMessage: IMessage = {
-      _id: Math.random().toString(36).substring(7),
-      text: messageText,
-      createdAt: new Date(),
-      user: {
-        _id: user.uid,
-        name: username,
-      },
-    };
-    
-    // Call the onSend function to save to Firestore
-    onSend([newMessage]);
-  };
-
-  // Handle accepting chat request
-  const handleAcceptRequest = async () => {
+  const handleAcceptRequest = useCallback(async () => {
     if (!chatId || !user) return;
-    
+
     try {
       const chatDocRef = doc(db, 'chats', chatId);
-      await setDoc(chatDocRef, {
-        status: 'accepted',
-        acceptedAt: Timestamp.now(),
-      }, { merge: true });
-      // Status will update via the real-time listener
-    } catch (error) {
-      console.error('Error accepting chat request:', error);
-      Alert.alert("Error", "Failed to accept chat request.");
+      await setDoc(
+        chatDocRef,
+        {
+          status: 'accepted',
+          acceptedAt: Timestamp.now(),
+        },
+        { merge: true }
+      );
+    } catch (e) {
+      Alert.alert('Error', firestoreUserMessage(e, 'Failed to accept chat request.'));
     }
-  };
+  }, [chatId, user]);
 
-  // Handle declining chat request
-  const handleDeclineRequest = async () => {
+  const handleDeclineRequest = useCallback(async () => {
     if (!chatId || !user) return;
-    
+
     try {
       const chatDocRef = doc(db, 'chats', chatId);
-      await setDoc(chatDocRef, {
-        status: 'declined',
-        declinedAt: Timestamp.now(),
-      }, { merge: true });
-      // Navigate back to chat inbox - the declined chat will be filtered out
+      await setDoc(
+        chatDocRef,
+        {
+          status: 'declined',
+          declinedAt: Timestamp.now(),
+        },
+        { merge: true }
+      );
       router.back();
-    } catch (error) {
-      console.error('Error declining chat request:', error);
-      Alert.alert("Error", "Failed to decline chat request.");
+    } catch (e) {
+      Alert.alert('Error', firestoreUserMessage(e, 'Failed to decline chat request.'));
     }
-  };
+  }, [chatId, user, router]);
+
+  /** Accept / decline row — above the input (GiftedChat renderChatFooter) */
+  const renderChatFooter = useCallback(() => {
+    if (chatStatus === 'pending' && !isRequestSender) {
+      return (
+        <View style={styles.requestActionsContainer}>
+          <Text style={styles.requestActionsTitle}>
+            New chat request from {Array.isArray(buddyName) ? buddyName[0] : buddyName || 'user'}
+          </Text>
+          <View style={styles.requestButtons}>
+            <TouchableOpacity onPress={handleAcceptRequest} style={styles.acceptButton}>
+              <Check size={20} color="white" />
+              <Text style={styles.acceptButtonText}>Accept</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleDeclineRequest} style={styles.declineButton}>
+              <X size={20} color="white" />
+              <Text style={styles.declineButtonText}>Decline</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      );
+    }
+    return null;
+  }, [chatStatus, isRequestSender, buddyName, handleAcceptRequest, handleDeclineRequest]);
+
+  const renderInputToolbar = useCallback(
+    (props: InputToolbarProps<IMessage>) => {
+      const footerPad = { paddingBottom: Math.max(insets.bottom, 16) };
+
+      if (chatStatus === 'pending' && !isRequestSender) {
+        return null;
+      }
+      if (chatStatus === 'declined') {
+        return null;
+      }
+      if (chatStatus === 'pending' && isRequestSender) {
+        return (
+          <View style={[styles.footerContainer, footerPad]}>
+            <View style={styles.pendingMessageContainer}>
+              <Text style={styles.pendingMessageText}>
+                Your chat request is pending. You can continue the conversation once{' '}
+                {Array.isArray(buddyName) ? buddyName[0] : buddyName || 'the recipient'} accepts your
+                request.
+              </Text>
+            </View>
+          </View>
+        );
+      }
+      if (isBlocked) {
+        return null;
+      }
+      if (chatStatus !== 'accepted' && chatStatus !== null) {
+        return null;
+      }
+
+      return (
+        <InputToolbar
+          {...props}
+          containerStyle={[styles.footerContainer, footerPad]}
+          primaryStyle={styles.inputToolbarPrimary}
+          renderComposer={composerProps => (
+            <Composer
+              {...composerProps}
+              multiline
+              placeholder="Type a message..."
+              placeholderTextColor="#9CA3AF"
+              textInputStyle={styles.textInput}
+            />
+          )}
+          renderSend={sendProps => (
+            <Send
+              {...sendProps}
+              alwaysShowSend
+              disabled={!sendProps.text?.trim()}
+              containerStyle={[
+                styles.sendButton,
+                !sendProps.text?.trim() && styles.sendButtonDisabled,
+              ]}
+            >
+              <SendIcon size={20} color="white" />
+            </Send>
+          )}
+        />
+      );
+    },
+    [
+      buddyName,
+      chatStatus,
+      insets.bottom,
+      isBlocked,
+      isRequestSender,
+    ]
+  );
 
   // Handle avatar tap to open profile modal
   const handleAvatarTap = (userId: string) => {
@@ -902,9 +1274,12 @@ export default function ChatScreen() {
                   },
                 },
               ]);
-            } catch (error: any) {
-              console.error('Error blocking user:', error);
-              Alert.alert('Error', error.message || 'Failed to block user. Please try again.');
+            } catch (error: unknown) {
+              const msg =
+                error instanceof Error && error.message
+                  ? error.message
+                  : 'Failed to block user. Please try again.';
+              Alert.alert('Error', msg);
             }
           },
         },
@@ -912,10 +1287,10 @@ export default function ChatScreen() {
     );
   };
 
-  // Early return if user is not loaded
+  // Early returns: same edges as main screen (no bottom) to avoid layout jumps vs. loaded state
   if (!user) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <Text style={styles.errorText}>Please log in to use chat.</Text>
       </SafeAreaView>
     );
@@ -924,7 +1299,7 @@ export default function ChatScreen() {
   // Early return if chatId cannot be determined
   if (!chatId) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <Text style={styles.errorText}>Could not load chat. Missing chat ID.</Text>
       </SafeAreaView>
     );
@@ -933,16 +1308,15 @@ export default function ChatScreen() {
   // Ensure we have a valid user.uid
   if (!user?.uid || user.uid.trim() === '') {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <Text style={styles.errorText}>Invalid user session.</Text>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#111827' }} edges={['top', 'left', 'right']}>
-      {/* Custom Header with Back Button */}
-      <View style={styles.headerContainer}>
+    <View style={{ flex: 1, backgroundColor: '#111827' }}>
+      <View style={[styles.headerContainer, { paddingTop: 12 + insets.top }]}>
         <TouchableOpacity
           onPress={() => router.back()}
           style={styles.backButton}
@@ -953,13 +1327,27 @@ export default function ChatScreen() {
           <Text style={styles.headerTitle}>
             {Array.isArray(buddyName) ? buddyName[0] : buddyName || 'Chat'}
           </Text>
-          <Text style={styles.headerSubtitle}>
-            {chatStatus === 'pending' && isRequestSender 
-              ? 'Waiting for acceptance' 
-              : chatStatus === 'pending' && !isRequestSender
-              ? 'New chat request'
-              : 'Online'}
-          </Text>
+          {chatStatus === 'pending' && isRequestSender ? (
+            <Text style={styles.headerSubtitle}>Waiting for acceptance</Text>
+          ) : chatStatus === 'pending' && !isRequestSender ? (
+            <Text style={styles.headerSubtitle}>New chat request</Text>
+          ) : (
+            <View style={styles.headerPresenceOuter}>
+              <View style={styles.headerPresenceInner}>
+                {buddyPresence.online ? <View style={styles.presenceDot} /> : null}
+                <Text
+                  style={[
+                    styles.headerSubtitle,
+                    buddyPresence.online
+                      ? styles.headerPresenceOnline
+                      : styles.headerSubtitleMuted,
+                  ]}
+                >
+                  {buddyPresence.label}
+                </Text>
+              </View>
+            </View>
+          )}
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <Pressable
@@ -971,7 +1359,6 @@ export default function ChatScreen() {
           <Pressable
             onPress={() => {
               if (!activeBuddyId) {
-                console.error("CRITICAL: Cannot open modal, activeBuddyId is undefined.");
                 return;
               }
               setSelectedUserId(activeBuddyId);
@@ -988,7 +1375,8 @@ export default function ChatScreen() {
           </Pressable>
         </View>
       </View>
-      
+
+      <View style={{ flex: 1 }}>
       {/* Menu Dropdown */}
       {showMenu && (
         <>
@@ -1033,12 +1421,11 @@ export default function ChatScreen() {
           </View>
         </>
       )}
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
-      >
-        <View style={{ flex: 1 }}>
+      {/* Chat column: flex-shrink body + footer pinned to bottom of this region */}
+      {/* Android: plain View — OS resize (see app.json softwareKeyboardLayoutMode). iOS: KeyboardAvoidingView. */}
+      <ChatKeyboardWrapper>
+        <View style={styles.chatBody}>
+          <View style={styles.giftedChatFill}>
           <GiftedChat
             messages={messages || []}
             onSend={messages => onSend(messages)}
@@ -1048,79 +1435,22 @@ export default function ChatScreen() {
             }}
             renderMessage={renderMessage}
             renderBubble={renderBubble}
+            renderChatFooter={renderChatFooter}
             renderInputToolbar={renderInputToolbar}
             onLoadEarlier={loadMoreMessages}
             loadEarlier={hasMoreMessages && !loadingMore}
             isLoadingEarlier={loadingMore}
             infiniteScroll={true}
+            bottomOffset={insets.bottom}
             messagesContainerStyle={{
               backgroundColor: '#111827',
             }}
-            isKeyboardInternallyHandled={false}
-            listViewProps={{ keyboardDismissMode: 'on-drag' }}
+            listViewProps={{ keyboardDismissMode: 'on-drag' } as React.ComponentProps<typeof GiftedChat>['listViewProps']}
           />
-          
-          {/* Pending Request Actions - For Request Recipient */}
-          {chatStatus === 'pending' && !isRequestSender && (
-            <View style={styles.requestActionsContainer}>
-              <Text style={styles.requestActionsTitle}>
-                New chat request from {Array.isArray(buddyName) ? buddyName[0] : buddyName || 'user'}
-              </Text>
-              <View style={styles.requestButtons}>
-                <TouchableOpacity
-                  onPress={handleAcceptRequest}
-                  style={styles.acceptButton}
-                >
-                  <Check size={20} color="white" />
-                  <Text style={styles.acceptButtonText}>Accept</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={handleDeclineRequest}
-                  style={styles.declineButton}
-                >
-                  <X size={20} color="white" />
-                  <Text style={styles.declineButtonText}>Decline</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
+          </View>
         </View>
-        
-        {/* Custom Footer - Show only if chat is accepted or null (allows first message) */}
-        {(chatStatus === 'accepted' || chatStatus === null) && (
-          <View style={styles.footerContainer}>
-            <TextInput
-              placeholder="Type a message..."
-              placeholderTextColor="#9CA3AF"
-              value={inputText}
-              onChangeText={setInputText}
-              style={styles.textInput}
-              multiline
-            />
-            <Pressable
-              onPress={handleSend}
-              disabled={!inputText.trim()}
-              style={[
-                styles.sendButton,
-                !inputText.trim() && styles.sendButtonDisabled
-              ]}
-            >
-              <Send size={20} color="white" />
-            </Pressable>
-          </View>
-        )}
-        
-        {/* Sender View - Show pending message when request is pending and user is sender */}
-        {chatStatus === 'pending' && isRequestSender && (
-          <View style={styles.footerContainer}>
-            <View style={styles.pendingMessageContainer}>
-              <Text style={styles.pendingMessageText}>
-                Your chat request is pending. You can continue the conversation once {Array.isArray(buddyName) ? buddyName[0] : buddyName || 'the recipient'} accepts your request.
-              </Text>
-            </View>
-          </View>
-        )}
-      </KeyboardAvoidingView>
+      </ChatKeyboardWrapper>
+      </View>
       <UserProfileModal
         ref={userProfileRef}
         userId={selectedUserId || ''}
@@ -1137,11 +1467,24 @@ export default function ChatScreen() {
           router.back();
         }}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  keyboardAvoidingRoot: {
+    flex: 1,
+    flexDirection: 'column',
+  },
+  chatBody: {
+    flex: 1,
+    minHeight: 0,
+  },
+  giftedChatFill: {
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
+  },
   container: {
     flex: 1,
     backgroundColor: '#111827', // Very dark gray/black background
@@ -1192,21 +1535,30 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   timestampText: {
-    fontSize: 12,
+    fontSize: 11,
+    lineHeight: 14,
+    opacity: 0.6,
     marginTop: 4,
     alignSelf: 'flex-end',
   },
   timestampTextCurrentUser: {
-    color: '#E5E7EB', // text-gray-200 - lighter gray for green bubbles
+    color: '#F9FAFB',
   },
   timestampTextOtherUser: {
-    color: '#9CA3AF', // text-gray-400 - medium gray for gray bubbles
+    color: '#D1D5DB',
   },
-  // Footer container styles
+  // Footer container styles (paddingBottom applied inline for keyboard / safe area)
+  inputToolbarPrimary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
   footerContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 16,
+    minHeight: 64,
+    paddingHorizontal: 16,
+    paddingTop: 12,
     backgroundColor: '#111827', // bg-gray-900 equivalent
     borderTopWidth: 1,
     borderTopColor: '#374151',
@@ -1241,7 +1593,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingBottom: 12,
     backgroundColor: '#111827',
     borderBottomWidth: 1,
     borderBottomColor: '#374151',
@@ -1263,6 +1615,40 @@ const styles = StyleSheet.create({
     color: '#8BC34A',
     fontSize: 12,
     marginTop: 2,
+  },
+  headerSubtitleMuted: {
+    color: '#9CA3AF',
+  },
+  /** Online label: vibrant green to match presence dot */
+  headerPresenceOnline: {
+    color: '#22C55E',
+    fontWeight: '600',
+  },
+  headerPresenceOuter: {
+    marginTop: 2,
+  },
+  headerPresenceInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  presenceDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#22C55E',
+  },
+  retryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+    alignSelf: 'flex-end',
+  },
+  retryText: {
+    color: '#FCA5A5',
+    fontSize: 12,
+    fontWeight: '600',
   },
   menuButton: {
     marginRight: 8,
@@ -1379,3 +1765,29 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 });
+
+/** iOS KAV: approximate custom header bar height (below safe area) so input clears the keyboard */
+const IOS_KEYBOARD_VERTICAL_OFFSET = 64;
+
+/**
+ * Android: no KeyboardAvoidingView — let the window resize with the keyboard (Expo:
+ * `android.softwareKeyboardLayoutMode` in app.json, typically `"resize"` ≈ adjustResize).
+ * `minHeight: 0` lets the flex column shrink when the window resizes after keyboard dismiss.
+ * If the input still misbehaves, confirm that setting and that bare AndroidManifest
+ * uses `android:windowSoftInputMode="adjustResize"` when not using Expo config.
+ * iOS: KeyboardAvoidingView + padding + header offset.
+ */
+function ChatKeyboardWrapper({ children }: { children: React.ReactNode }) {
+  if (Platform.OS === 'android') {
+    return <View style={{ flex: 1, minHeight: 0 }}>{children}</View>;
+  }
+  return (
+    <KeyboardAvoidingView
+      style={styles.keyboardAvoidingRoot}
+      behavior="padding"
+      keyboardVerticalOffset={IOS_KEYBOARD_VERTICAL_OFFSET}
+    >
+      {children}
+    </KeyboardAvoidingView>
+  );
+}

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Submit Your Race - TrailMatch</title>
+  <title>Submit Your Race - The Collective</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
@@ -139,7 +139,7 @@
       }
       try {
         const resp = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(loc)}&format=json&limit=1&addressdetails=1`, {
-          headers: { 'User-Agent': 'TrailMatch/1.0' }
+          headers: { 'User-Agent': 'TheCollective/1.0' }
         });
         const results = await resp.json();
         if (results && results.length > 0) {
@@ -422,7 +422,7 @@
   <div class="container mx-auto px-4 py-8 max-w-4xl">
     <div class="text-center mb-8">
       <h1 class="text-4xl font-bold mb-2 text-green-500">Submit Your Race</h1>
-      <p class="text-gray-400">Help runners discover your trail race on TrailMatch</p>
+      <p class="text-gray-400">Help runners discover your trail race on The Collective</p>
     </div>
 
     <div class="bg-gray-800 rounded-lg p-8">

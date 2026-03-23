@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MapPin, Navigation, Calendar, ChevronLeft, ChevronRight } from 'lucide-react-native';
 import StandardBottomSheet, { StandardBottomSheetHandle } from './StandardBottomSheet';
 
-export type DistanceFilter = 'All' | '5K-25K' | '50K' | '100K' | '100M+';
+export type DistanceFilter = 'All' | '5K-25K' | '50mi' | '50K' | '100K' | '100M+';
 export type DifficultyFilter = 'All' | 'Technical/Skyrunning' | 'Moderate/Mountain' | 'Easy/Fire Road';
 export type ElevationFilter = 'All' | '< 2,000ft' | '2,000-5,000ft' | '5,000-10,000ft' | '10,000ft+';
 export type RadiusFilter = 25 | 50 | 100 | 250 | 500 | 0; // 0 means Global/No Limit
@@ -43,7 +43,7 @@ const RADIUS_OPTIONS: { value: RadiusFilter; label: string; description: string 
   { value: 500, label: '500 mi', description: 'Wide' },
   { value: 0, label: 'Global', description: 'Everywhere' },
 ];
-const DISTANCE_OPTIONS: DistanceFilter[] = ['All', '5K-25K', '50K', '100K', '100M+'];
+const DISTANCE_OPTIONS: DistanceFilter[] = ['All', '5K-25K', '50mi', '50K', '100K', '100M+'];
 const DIFFICULTY_OPTIONS: DifficultyFilter[] = ['All', 'Technical/Skyrunning', 'Moderate/Mountain', 'Easy/Fire Road'];
 const ELEVATION_OPTIONS: ElevationFilter[] = ['All', '< 2,000ft', '2,000-5,000ft', '5,000-10,000ft', '10,000ft+'];
 
@@ -132,45 +132,52 @@ const FilterModal = forwardRef<FilterModalHandle, FilterModalProps>(
     /* ── Sticky footer: Apply & Reset buttons pinned to the bottom ─── */
     const renderFooter = useCallback(
       (props: BottomSheetFooterProps) => (
-        <BottomSheetFooter {...props} bottomInset={insets.bottom}>
+        <BottomSheetFooter {...props} bottomInset={0}>
+          {/* Outer container fills all the way to the device edge (no gap) */}
           <View
             style={{
-              flexDirection: 'row',
-              gap: 12,
-              paddingHorizontal: 24,
-              paddingTop: 12,
-              paddingBottom: 16,
               backgroundColor: '#1E293B',
               borderTopWidth: 1,
               borderTopColor: '#334155',
             }}
           >
-            <Pressable
-              onPress={handleReset}
+            {/* Inner container: buttons with safe-area padding at the bottom */}
+            <View
               style={{
-                flex: 1,
-                backgroundColor: '#0F172A',
-                paddingVertical: 16,
-                borderRadius: 12,
-                alignItems: 'center',
+                flexDirection: 'row',
+                gap: 12,
+                paddingHorizontal: 24,
+                paddingTop: 12,
+                paddingBottom: 16 + insets.bottom,
               }}
             >
-              <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>Reset</Text>
-            </Pressable>
-            <Pressable
-              onPress={handleApply}
-              style={{
-                flex: 1,
-                paddingVertical: 16,
-                borderRadius: 12,
-                alignItems: 'center',
-                backgroundColor: hasActiveFilters ? '#10B981' : '#334155',
-              }}
-            >
-              <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '700' }}>
-                Apply Filters
-              </Text>
-            </Pressable>
+              <Pressable
+                onPress={handleReset}
+                style={{
+                  flex: 1,
+                  backgroundColor: '#0F172A',
+                  paddingVertical: 16,
+                  borderRadius: 12,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>Reset</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleApply}
+                style={{
+                  flex: 1,
+                  paddingVertical: 16,
+                  borderRadius: 12,
+                  alignItems: 'center',
+                  backgroundColor: hasActiveFilters ? '#10B981' : '#334155',
+                }}
+              >
+                <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '700' }}>
+                  Apply Filters
+                </Text>
+              </Pressable>
+            </View>
           </View>
         </BottomSheetFooter>
       ),

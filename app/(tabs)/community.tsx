@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   Pressable,
   Alert,
+  Keyboard,
 } from "react-native";
 import { BottomSheetTextInput } from "@gorhom/bottom-sheet";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -81,6 +82,21 @@ export default function RaceCommunityHub() {
   // Refs for bottom sheets
   const createPostSheetRef = useRef<StandardBottomSheetHandle>(null);
   const editPostSheetRef = useRef<StandardBottomSheetHandle>(null);
+
+  // Keyboard-aware padding so Post/Save buttons stay scrollable above keyboard
+  const [keyboardBottomPadding, setKeyboardBottomPadding] = useState(160);
+  useEffect(() => {
+    const show = Keyboard.addListener("keyboardDidShow", (e) => {
+      setKeyboardBottomPadding(e.endCoordinates.height + 80);
+    });
+    const hide = Keyboard.addListener("keyboardDidHide", () => {
+      setKeyboardBottomPadding(160);
+    });
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (!trailId) {
@@ -495,6 +511,7 @@ export default function RaceCommunityHub() {
         ref={createPostSheetRef}
         title="Create Post"
         snapPoints={['60%', '85%']}
+        contentContainerStyle={{ paddingBottom: keyboardBottomPadding }}
       >
         <View style={{ marginBottom: 16 }}>
           <Text style={{ color: '#CBD5E1', marginBottom: 8 }}>Category</Text>
@@ -577,7 +594,7 @@ export default function RaceCommunityHub() {
             multiline
             value={newPostContent}
             onChangeText={setNewPostContent}
-            onFocus={() => requestAnimationFrame(() => createPostSheetRef.current?.expand())}
+            onFocus={() => createPostSheetRef.current?.expand()}
           />
         </View>
 
@@ -603,6 +620,7 @@ export default function RaceCommunityHub() {
         title="Edit Post"
         snapPoints={['60%', '85%']}
         onClose={() => setActivePost(null)}
+        contentContainerStyle={{ paddingBottom: keyboardBottomPadding }}
       >
         <View style={{ marginBottom: 16 }}>
           <Text style={{ color: '#CBD5E1', marginBottom: 8 }}>Category</Text>
@@ -685,7 +703,7 @@ export default function RaceCommunityHub() {
             multiline
             value={editContent}
             onChangeText={setEditContent}
-            onFocus={() => requestAnimationFrame(() => editPostSheetRef.current?.expand())}
+            onFocus={() => editPostSheetRef.current?.expand()}
           />
         </View>
 

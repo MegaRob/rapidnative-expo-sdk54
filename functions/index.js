@@ -1418,7 +1418,7 @@ function geocodeLocation(locationStr) {
   const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${q}`;
 
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { "User-Agent": "TrailMatch/1.0" } }, (res) => {
+    https.get(url, { headers: { "User-Agent": "TheCollective/1.0" } }, (res) => {
       let data = "";
       res.on("data", (chunk) => { data += chunk; });
       res.on("end", () => {
@@ -1897,7 +1897,7 @@ exports.onNewRaceMatch = functions.firestore
  * - Returns HTML with dynamic Open Graph meta tags for rich social previews
  *   (iMessage, WhatsApp, Twitter, Facebook all show race image + title + description)
  * - Shows a beautiful race preview with "Open in App" and "Download" buttons
- * - "Open in App" tries the trailmatch:// URL scheme first, then falls back to app stores
+ * - "Open in App" tries the app’s custom URL scheme first, then falls back to app stores
  */
 exports.shareRacePage = functions.https.onRequest(async (req, res) => {
   // Extract race ID from URL path: /race/RACE_ID
@@ -1942,7 +1942,7 @@ exports.shareRacePage = functions.https.onRequest(async (req, res) => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${esc(name)} | TrailMatch</title>
+  <title>${esc(name)} | The Collective</title>
 
   <!-- Open Graph (Facebook, iMessage, WhatsApp) -->
   <meta property="og:title" content="${esc(name)}">
@@ -1950,7 +1950,7 @@ exports.shareRacePage = functions.https.onRequest(async (req, res) => {
   <meta property="og:image" content="${esc(imageUrl)}">
   <meta property="og:url" content="${esc(webUrl)}">
   <meta property="og:type" content="website">
-  <meta property="og:site_name" content="TrailMatch">
+  <meta property="og:site_name" content="The Collective">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
@@ -2122,15 +2122,15 @@ exports.shareRacePage = functions.https.onRequest(async (req, res) => {
 
   <div class="buttons">
     <a class="btn-open" id="openBtn" href="${esc(appSchemeUrl)}">
-      Open in TrailMatch
+      Open in The Collective
     </a>
     <a class="btn-download" href="https://apps.apple.com/app/trailmatch" id="downloadBtn">
-      Download TrailMatch — Free
+      Download The Collective — Free
     </a>
   </div>
 
   <div class="logo-bar">
-    <span>🏔️ TrailMatch</span>
+    <span>🏔️ The Collective</span>
   </div>
 
   <script>

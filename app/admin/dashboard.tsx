@@ -300,7 +300,7 @@ export default function DirectorDashboard() {
   return (
     <View className="flex-1 bg-slate-950 flex-row">
       <View className="w-[280px] border-r border-emerald-500/10 bg-slate-900/80 px-6 py-8">
-        <Text className="text-emerald-400 text-xl font-semibold">TrailMatch Director</Text>
+        <Text className="text-emerald-400 text-xl font-semibold">The Collective Director</Text>
         <Text className="text-xs text-slate-400">Race Command Center</Text>
         <View className="mt-8 space-y-2">
           {TABS.map((item) => (
@@ -336,7 +336,7 @@ export default function DirectorDashboard() {
         </View>
       </View>
 
-      <ScrollView className="flex-1 px-10 py-8">
+      <ScrollView className="flex-1 px-10 py-8" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets={true}>
         <View className="flex-row justify-between items-center mb-6">
           <View>
             <Text className="text-2xl text-emerald-400 font-semibold">{activeRace?.name}</Text>

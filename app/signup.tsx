@@ -147,7 +147,7 @@ export default function SignUpScreen() {
             <Mountain color="#10B981" size={40} />
           </View>
           <Text style={{ fontSize: 32, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.5 }}>
-            Join TrailMatch
+            Join The Collective
           </Text>
           <Text style={{ fontSize: 15, color: '#94A3B8', marginTop: 6 }}>
             Your next adventure starts here

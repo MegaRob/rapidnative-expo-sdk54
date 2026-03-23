@@ -50,7 +50,7 @@ const slides: Slide[] = [
   {
     id: "welcome",
     type: "hero",
-    title: "Welcome to\nTrailMatch",
+    title: "Welcome to\nThe Collective",
     subtitle: "Discover trail races you'll love — with a simple swipe.",
     image: "https://images.unsplash.com/photo-1635099404457-91c3d0dade3b?w=1200&auto=format&fit=crop&q=80",
     gradientColors: ["transparent", "rgba(0,0,0,0.3)", "rgba(15,23,42,0.95)", "#0F172A"],
@@ -452,6 +452,7 @@ export default function OnboardingScreen() {
           }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
+          automaticallyAdjustKeyboardInsets={true}
         >
           {/* Section header */}
           <View style={{ marginBottom: 32 }}>
@@ -691,7 +692,7 @@ export default function OnboardingScreen() {
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 20 : 0}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 60 : 30}
       >
         <FlatList
           ref={flatListRef}
