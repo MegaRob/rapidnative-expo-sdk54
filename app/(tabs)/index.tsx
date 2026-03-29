@@ -3,8 +3,7 @@ import { Image as ExpoImage } from "expo-image";
 import * as Location from 'expo-location';
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import { signOut } from 'firebase/auth';
-import { arrayRemove, arrayUnion, collection, deleteDoc, doc, documentId, getDoc, getDocs, limit, onSnapshot, orderBy, query, setDoc, startAfter, Timestamp, updateDoc, where, writeBatch } from "firebase/firestore";
+import { arrayRemove, arrayUnion, collection, deleteDoc, doc, documentId, getCountFromServer, getDocs, limit, orderBy, query, setDoc, startAfter, Timestamp, updateDoc, where, writeBatch } from "firebase/firestore";
 import {
   Bookmark,
   Calendar,
@@ -35,9 +34,12 @@ import {
   View
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { auth, db } from '../../src/firebaseConfig';
+import { auth, db, signOut } from '../../src/firebaseConfig';
+import { useCurrentUserProfile } from '../../hooks/useCurrentUserProfile';
 import { calculateDistance, geocodeLocation, getCoordinatesForCity } from '../../utils/geolocationUtils';
+import { getTrailSocialTotal, sortTrailsForSwipeDeck } from '../../utils/raceFeedSort';
 import { applyRaceFilters } from '../../utils/raceFilters';
+import { fetchMergedUserProfile } from '../../utils/userProfile';
 import FilterModal, { FilterModalHandle, RaceFilters } from '../components/FilterModal';
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
@@ -74,7 +76,10 @@ export interface Trail {
   participants: number;
   slogan: string;
   description?: string; // Race description
-  matchCount?: number; // Number of users who matched this trail
+  matchCount?: number; // Interested (matches) count — optional denormalized field
+  registrationCount?: number; // Registration docs count — optional denormalized field
+  /** Sum of interested + registered when known (Firestore or client-fetched). */
+  socialTotal?: number;
   sponsorLogos?: string[]; // Array of sponsor logo image URLs
   sponsorText?: string[]; // Array of sponsor text names
   latitude?: number; // Race latitude
@@ -94,7 +99,8 @@ export default function HomeScreen() {
   const [error, setError] = useState<string | null>(null);
   const [lastSwipedRace, setLastSwipedRace] = useState<Trail | null>(null);
   const [lastSwipeAction, setLastSwipeAction] = useState<'save' | 'dislike' | null>(null);
-  const [hasUnreadMessages, setHasUnreadMessages] = useState(false);
+  const { profile: currentUserProfile } = useCurrentUserProfile();
+  const hasUnreadMessages = currentUserProfile?.hasUnreadMessages === true;
   const filterModalRef = useRef<FilterModalHandle>(null);
   const [userLatitude, setUserLatitude] = useState<number | null>(null);
   const [userLongitude, setUserLongitude] = useState<number | null>(null);
@@ -111,6 +117,9 @@ export default function HomeScreen() {
     dateTo: null,
   });
   const [allRaces, setAllRaces] = useState<Trail[]>([]); // Store unfiltered races
+  /** Client-fetched match+registration counts when trail docs omit denormalized fields. */
+  const [socialTotals, setSocialTotals] = useState<Record<string, number>>({});
+  const socialFetchRequestedRef = useRef<Set<string>>(new Set());
   // --- Pagination state ---
   const [lastVisibleDoc, setLastVisibleDoc] = useState<any>(null);
   const [hasMoreRaces, setHasMoreRaces] = useState(true);
@@ -265,13 +274,75 @@ export default function HomeScreen() {
     let filtered = applyRaceFilters(racesWithDistance, filters);
     filtered = filterByRadius(filtered, filters.radius, userLatitude, userLongitude);
 
-    return [...filtered].sort((a, b) => {
-      if (a.distance !== undefined && b.distance !== undefined) return a.distance - b.distance;
-      if (a.distance !== undefined) return -1;
-      if (b.distance !== undefined) return 1;
-      return 0;
+    return sortTrailsForSwipeDeck(filtered, socialTotals);
+  }, [allRaces, filters, userLatitude, userLongitude, socialTotals]);
+
+  // Aggregate Interested + Registered counts when trail docs lack denormalized fields.
+  useEffect(() => {
+    let cancelled = false;
+
+    const uniqueIds = [...new Set(allRaces.map((trail) => trail.id))];
+    const toFetch = uniqueIds.filter((id) => {
+      const trail = allRaces.find((t) => t.id === id);
+      if (!trail) return false;
+      if (typeof trail.socialTotal === 'number') return false;
+      if (typeof trail.matchCount === 'number' || typeof trail.registrationCount === 'number') {
+        return false;
+      }
+      if (socialTotals[id] !== undefined) return false;
+      if (socialFetchRequestedRef.current.has(id)) return false;
+      return true;
     });
-  }, [allRaces, filters, userLatitude, userLongitude]);
+
+    if (toFetch.length === 0) return;
+
+    toFetch.forEach((id) => socialFetchRequestedRef.current.add(id));
+
+    const BATCH = 8;
+    const run = async () => {
+      for (let i = 0; i < toFetch.length; i += BATCH) {
+        if (cancelled) return;
+        const chunk = toFetch.slice(i, i + BATCH);
+
+        const results = await Promise.all(
+          chunk.map(async (trailId) => {
+            try {
+              // `matches` is readable by any signed-in user. `registrations` docs are restricted to
+              // owner/admin/director — aggregate counts always fail with permission-denied and spam the console.
+              const trail = allRaces.find((t) => t.id === trailId);
+              const registrationCountFromTrail =
+                trail && typeof trail.registrationCount === "number"
+                  ? trail.registrationCount
+                  : 0;
+              const m = await getCountFromServer(
+                query(collection(db, "matches"), where("trailId", "==", trailId))
+              );
+              return {
+                trailId,
+                total: m.data().count + registrationCountFromTrail,
+              };
+            } catch {
+              return { trailId, total: 0 };
+            }
+          })
+        );
+
+        if (cancelled) return;
+        setSocialTotals((prev) => {
+          const next = { ...prev };
+          for (const { trailId, total } of results) {
+            next[trailId] = total;
+          }
+          return next;
+        });
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [allRaces, socialTotals]);
 
   // Refs to avoid stale state in PanResponder
   const loadedRacesRef = useRef(filteredRaces);
@@ -433,6 +504,16 @@ export default function HomeScreen() {
         }));
     }
 
+    const matchCount = typeof data?.matchCount === 'number' ? data.matchCount : undefined;
+    const registrationCount =
+      typeof data?.registrationCount === 'number' ? data.registrationCount : undefined;
+    let socialTotal: number | undefined;
+    if (typeof data?.socialTotal === 'number') {
+      socialTotal = data.socialTotal;
+    } else if (matchCount !== undefined || registrationCount !== undefined) {
+      socialTotal = (matchCount ?? 0) + (registrationCount ?? 0);
+    }
+
     const trail = {
       id,
       name: data?.name || "Unnamed Trail",
@@ -453,6 +534,9 @@ export default function HomeScreen() {
       avgRating: typeof data?.avgRating === 'number' ? data.avgRating : undefined,
       reviewCount: typeof data?.reviewCount === 'number' ? data.reviewCount : undefined,
       source: data?.source || '',
+      matchCount,
+      registrationCount,
+      socialTotal,
       position: new Animated.ValueXY(),
     };
     return trail;
@@ -462,11 +546,12 @@ export default function HomeScreen() {
     try {
       // Wipe data BEFORE signing out to prevent ghost renders
       setAllRaces([]);
+      setSocialTotals({});
+      socialFetchRequestedRef.current.clear();
       setCurrentIndex(0);
       setUserProfile(null);
       setLastSwipedRace(null);
       setLastSwipeAction(null);
-      setHasUnreadMessages(false);
       setLastVisibleDoc(null);
       setHasMoreRaces(true);
       await signOut(auth);
@@ -498,9 +583,9 @@ export default function HomeScreen() {
           limit(RACE_BATCH_SIZE)
         );
 
-        // Fire ALL Firestore queries in parallel — user doc + trails batch + exclusion lists
-        const [userDoc, dislikedSnapshot, completedSnapshot, registrationsSnapshot, trailSnapshot] = await Promise.all([
-          getDoc(userDocRef),
+        // Fire ALL Firestore queries in parallel — merged user profile + trails batch + exclusion lists
+        const [mergedUser, dislikedSnapshot, completedSnapshot, registrationsSnapshot, trailSnapshot] = await Promise.all([
+          fetchMergedUserProfile(uid),
           getDocs(collection(db, "users", uid, "dislikedRaces")),
           getDocs(query(collection(db, 'completed_races'), where('userId', '==', uid))),
           getDocs(query(collection(db, 'registrations'), where('userId', '==', uid))),
@@ -515,8 +600,8 @@ export default function HomeScreen() {
         let effectLat: number | null = userLatitude;
         let effectLon: number | null = userLongitude;
 
-        if (userDoc.exists()) {
-          const userData = userDoc.data();
+        if (mergedUser && Object.keys(mergedUser as object).length > 0) {
+          const userData = mergedUser as Record<string, unknown>;
           setUserProfile(userData);
           if (Array.isArray(userData?.matchedTrails)) {
             matchedTrailIds = userData.matchedTrails.filter(
@@ -530,8 +615,10 @@ export default function HomeScreen() {
             : typeof userData?.preferredRadius === 'number'
             ? userData.preferredRadius
             : 0;
-          const savedDistance = userData?.preferredDistance || null;
-          const savedDifficulty = userData?.preferredDifficulty || null;
+          const savedDistance =
+            typeof userData?.preferredDistance === 'string' ? userData.preferredDistance : null;
+          const savedDifficulty =
+            typeof userData?.preferredDifficulty === 'string' ? userData.preferredDifficulty : null;
 
           setFilters(prev => ({
             ...prev,
@@ -556,7 +643,9 @@ export default function HomeScreen() {
             } else {
               // ── Fire-and-forget geocoding: do NOT await it so cards load immediately.
               //    Coordinates will be set asynchronously and races re-sorted on next render.
-              const locationName = userData?.locationName || userData?.hometown || userData?.location || '';
+              const locationName = String(
+                userData?.locationName || userData?.hometown || userData?.location || ''
+              );
               if (locationName) {
                 setIsResolvingLocation(true);
                 geocodeLocation(locationName)
@@ -724,16 +813,10 @@ export default function HomeScreen() {
 
       if (newTrails.length === 0) return; // All excluded — auto-load will trigger again if hasMore
 
-      // Sort new batch by distance (nearest first)
-      newTrails.sort((a, b) => {
-        if (a.distance !== undefined && b.distance !== undefined) return a.distance - b.distance;
-        if (a.distance !== undefined) return -1;
-        if (b.distance !== undefined) return 1;
-        return 0;
-      });
+      const orderedNew = sortTrailsForSwipeDeck(newTrails, socialTotals);
 
       // Append to the unfiltered pool
-      setAllRaces(prev => [...prev, ...newTrails]);
+      setAllRaces(prev => [...prev, ...orderedNew]);
 
       if (requestId !== filterRequestRef.current) return;
     } catch (error) {
@@ -742,7 +825,7 @@ export default function HomeScreen() {
       loadingMoreRef.current = false;
       setLoadingMore(false);
     }
-  }, [hasMoreRaces, lastVisibleDoc, uid, buildTrail, userLatitude, userLongitude]);
+  }, [hasMoreRaces, lastVisibleDoc, uid, buildTrail, userLatitude, userLongitude, socialTotals]);
 
   // Auto-load more races when the user is running low on unswiped cards
   useEffect(() => {
@@ -765,24 +848,6 @@ export default function HomeScreen() {
   }, [loading, allRaces.length, filteredRaces.length]);
   // --- END OF FETCH ---
 
-  // --- LISTEN FOR UNREAD MESSAGES ---
-  useEffect(() => {
-    if (!auth.currentUser) return;
-
-    const uid = auth.currentUser.uid;
-    const userDocRef = doc(db, 'users', uid);
-
-    const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        setHasUnreadMessages(data.hasUnreadMessages === true);
-      }
-    });
-
-    return () => unsubscribe();
-  }, [auth.currentUser]);
-  // --- END OF UNREAD MESSAGES LISTENER ---
-
   // --- SYNC SWIPE DECK ON SCREEN FOCUS ---
   // Removes newly saved/registered races AND restores unfavorited races.
   // Wrapped in InteractionManager so heavy Firestore queries wait until the
@@ -793,14 +858,14 @@ export default function HomeScreen() {
         const syncDeck = async () => {
           if (!uid) return;
           try {
-            const [userDoc, regSnapshot, completedSnapshot, dislikedSnapshot] = await Promise.all([
-              getDoc(doc(db, 'users', uid)),
+            const [merged, regSnapshot, completedSnapshot, dislikedSnapshot] = await Promise.all([
+              fetchMergedUserProfile(uid),
               getDocs(query(collection(db, 'registrations'), where('userId', '==', uid))),
               getDocs(query(collection(db, 'completed_races'), where('userId', '==', uid))),
               getDocs(collection(db, 'users', uid, 'dislikedRaces')),
             ]);
 
-            const matchedTrails = userDoc.exists() ? (userDoc.data()?.matchedTrails || []) : [];
+            const matchedTrails = Array.isArray(merged?.matchedTrails) ? merged.matchedTrails : [];
             const registeredIds = regSnapshot.docs.map(d => d.data().trailId);
             const completedIds = completedSnapshot.docs.map(d => d.data().trailId);
             const dislikedIds = dislikedSnapshot.docs.map(d => d.id);
@@ -848,7 +913,11 @@ export default function HomeScreen() {
     // Save race
 
     if (!uid) {
-      console.error("Save failed: No user ID");
+      if (__DEV__) {
+        console.warn("[Home] Save skipped Firestore (no uid — signed out or auth not ready yet).");
+      }
+      removeRaceFromDeck(raceId);
+      prefetchRaceImages(loadedRacesRef.current, currentIndexRef.current, 4);
       return;
     }
 
@@ -889,7 +958,13 @@ export default function HomeScreen() {
     setLastSwipeAction('dislike');
 
     if (!uid) {
-      console.error("CRITICAL: UserID is null or undefined. Cannot write to Firestore.");
+      if (__DEV__) {
+        console.warn(
+          "[Home] Discard skipped Firestore (no uid — signed out or auth not ready yet)."
+        );
+      }
+      removeRaceFromDeck(raceId);
+      prefetchRaceImages(loadedRacesRef.current, currentIndexRef.current, 4);
       return;
     }
 
@@ -910,6 +985,13 @@ export default function HomeScreen() {
     removeRaceFromDeck(raceId);
     prefetchRaceImages(loadedRacesRef.current, currentIndexRef.current, 4);
   }, [uid, removeRaceFromDeck, prefetchRaceImages]);
+
+  // PanResponder is created only once (useRef initializer); without refs, swipe callbacks
+  // stay stuck on the first render's handlers when uid was still null (auth not ready).
+  const handleSaveRaceRef = useRef(handleSaveRace);
+  const handleDiscardRaceRef = useRef(handleDiscardRace);
+  handleSaveRaceRef.current = handleSaveRace;
+  handleDiscardRaceRef.current = handleDiscardRace;
 
   const panResponder = useRef(
     PanResponder.create({
@@ -952,8 +1034,8 @@ export default function HomeScreen() {
             useNativeDriver: true,
             duration: 200, // Make it fast
           }).start(() => {
-            // AFTER animation, call the save logic
-            handleSaveRace(currentRace.id);
+            // AFTER animation, call the save logic (always latest handler / uid)
+            handleSaveRaceRef.current(currentRace.id);
           });
         }
 
@@ -965,8 +1047,8 @@ export default function HomeScreen() {
             useNativeDriver: true,
             duration: 200,
           }).start(() => {
-            // AFTER animation, call the discard logic
-            handleDiscardRace(currentRace.id);
+            // AFTER animation, call the discard logic (always latest handler / uid)
+            handleDiscardRaceRef.current(currentRace.id);
           });
         }
 
@@ -984,6 +1066,8 @@ export default function HomeScreen() {
 
   const currentRace = filteredRaces[currentIndex] ?? null;
   const nextRace = filteredRaces[currentIndex + 1] ?? null;
+  const currentSocialTotal = currentRace ? getTrailSocialTotal(currentRace, socialTotals) : 0;
+  const nextSocialTotal = nextRace ? getTrailSocialTotal(nextRace, socialTotals) : 0;
 
   const handleUndo = useCallback(async () => {
     if (!lastSwipedRace || !lastSwipeAction || !uid) {
@@ -1079,6 +1163,8 @@ export default function HomeScreen() {
       setLastVisibleDoc(null);
       setHasMoreRaces(true);
       setAllRaces([]);
+      setSocialTotals({});
+      socialFetchRequestedRef.current.clear();
       setCurrentIndex(0);
       setFetchKey(prev => prev + 1); // Triggers the main fetchTrails useEffect
     } catch (error) {
@@ -1328,6 +1414,28 @@ export default function HomeScreen() {
                   </View>
                 </View>
               )}
+              {nextSocialTotal >= 3 && (
+                <View
+                  pointerEvents="none"
+                  style={{
+                    position: 'absolute',
+                    top: 16,
+                    left: 16,
+                    zIndex: 10,
+                    backgroundColor: 'rgba(0,0,0,0.55)',
+                    borderRadius: 999,
+                    paddingHorizontal: 12,
+                    paddingVertical: 6,
+                    borderWidth: 1,
+                    borderColor: 'rgba(255,255,255,0.12)',
+                  }}
+                >
+                  <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>🔥 Popular</Text>
+                  <Text style={{ color: 'rgba(255,255,255,0.88)', fontSize: 11, marginTop: 2 }}>
+                    Join {nextSocialTotal} others
+                  </Text>
+                </View>
+              )}
             </View>
           </View>
         )}
@@ -1417,6 +1525,29 @@ export default function HomeScreen() {
                 <Send size={20} color="#8BC34A" />
               </TouchableOpacity>
             </View>
+
+            {currentSocialTotal >= 3 && (
+              <View
+                pointerEvents="none"
+                style={{
+                  position: 'absolute',
+                  top: 16,
+                  left: 16,
+                  zIndex: 10,
+                  backgroundColor: 'rgba(0,0,0,0.55)',
+                  borderRadius: 999,
+                  paddingHorizontal: 12,
+                  paddingVertical: 6,
+                  borderWidth: 1,
+                  borderColor: 'rgba(255,255,255,0.12)',
+                }}
+              >
+                <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>🔥 Popular</Text>
+                <Text style={{ color: 'rgba(255,255,255,0.88)', fontSize: 11, marginTop: 2 }}>
+                  Join {currentSocialTotal} others
+                </Text>
+              </View>
+            )}
 
             {/* Spacer to push content to bottom */}
             <View className="flex-1" />

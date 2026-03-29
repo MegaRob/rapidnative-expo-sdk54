@@ -1,5 +1,4 @@
 import { useRouter } from 'expo-router';
-import { sendPasswordResetEmail, signInWithEmailAndPassword } from 'firebase/auth';
 import { Mountain } from 'lucide-react-native';
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -14,7 +13,11 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import KeyboardScreen from './components/KeyboardScreen';
-import { auth } from '../src/firebaseConfig';
+import {
+  auth,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+} from "@/src/firebaseConfig";
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 

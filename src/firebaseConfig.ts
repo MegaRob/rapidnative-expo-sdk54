@@ -1,26 +1,42 @@
-import { initializeApp, getApps, FirebaseApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-// Metro resolves `@firebase/auth` to the RN build (AsyncStorage persistence). Types use `index.rn.d.ts` when the bundler condition applies.
-import { initializeAuth, getReactNativePersistence } from "@firebase/auth";
-import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-
 /**
- * Firebase web config — all values must come from EXPO_PUBLIC_* env vars (see root `.env.example`).
- * Do not hardcode GCP project IDs or domains here; copy values from Firebase Console → Project settings.
- * Restrict the API key (Android: `com.robertolsen.thecollective`, release SHA-256).
+ * Firebase bootstrap for React Native (Expo).
+ *
+ * Do NOT import `firebase/firestore` or `firebase/storage` at the top of this file. Loading those
+ * bundles pulls `@firebase/app` / Firestore registration through Metro before `@firebase/auth` has
+ * finished `registerAuth()`, which causes: "Component auth has not been registered yet".
+ * Firestore and Storage are required only after `initializeAuth` succeeds.
  */
+import "@firebase/auth";
+
+import type { FirebaseApp } from "@firebase/app";
+import type { Firestore } from "@firebase/firestore";
+import type { FirebaseStorage } from "@firebase/storage";
+import { getApp, getApps, initializeApp } from "@firebase/app";
+import {
+  createUserWithEmailAndPassword,
+  deleteUser,
+  getAuth,
+  getReactNativePersistence,
+  initializeAuth,
+  onAuthStateChanged,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile,
+} from "@firebase/auth";
+import ReactNativeAsyncStorage from "@react-native-async-storage/async-storage";
+
+/** From Firebase Console → Project settings → Your apps (Web). */
 const firebaseConfig = {
-  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY ?? "",
-  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ?? "",
-  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID ?? "",
-  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET ?? "",
-  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? "",
-  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID ?? "",
+  apiKey: "AIzaSyAcKYEhZyUgwUV58uWEVbI4Gwkn65miHt4",
+  authDomain: "trailmatch-49203553-49000.firebaseapp.com",
+  projectId: "trailmatch-49203553-49000",
+  storageBucket: "trailmatch-49203553-49000.firebasestorage.app",
+  messagingSenderId: "1048323489461",
+  appId: "1:1048323489461:web:e3c514fcf0d7748ef848fc",
 };
 
-const isFirebaseConfigured = Boolean(
+export const isFirebaseConfigured = Boolean(
   firebaseConfig.apiKey &&
     firebaseConfig.projectId &&
     firebaseConfig.authDomain &&
@@ -29,44 +45,73 @@ const isFirebaseConfigured = Boolean(
     firebaseConfig.appId
 );
 
-// Initialize Firebase - use existing app if already initialized
-let app: FirebaseApp | undefined;
-let auth: ReturnType<typeof getAuth> | undefined;
-let db: ReturnType<typeof getFirestore> | undefined;
-let storage: ReturnType<typeof getStorage> | undefined;
+/** False when keys are missing, init threw, or we fell back to dummy exports — do not call Auth/Firestore APIs. */
+export let isFirebaseReady = false;
+
+type AuthInstance = ReturnType<typeof getAuth>;
+
+let app: FirebaseApp;
+let auth: AuthInstance;
+let db: Firestore;
+let storage: FirebaseStorage;
+
+/** RN must use `initializeAuth` + AsyncStorage persistence; `getAuth` alone throws until Auth is registered. */
+function initAuthForApp(firebaseApp: FirebaseApp): AuthInstance {
+  try {
+    return initializeAuth(firebaseApp, {
+      persistence: getReactNativePersistence(ReactNativeAsyncStorage),
+    });
+  } catch (e: unknown) {
+    const code =
+      e && typeof e === "object" && "code" in e
+        ? String((e as { code: unknown }).code)
+        : "";
+    if (code === "auth/already-initialized") {
+      return getAuth(firebaseApp);
+    }
+    throw e;
+  }
+}
 
 function setDummyFirebaseExports() {
+  isFirebaseReady = false;
   app = {} as FirebaseApp;
-  auth = {} as ReturnType<typeof getAuth>;
-  db = {} as ReturnType<typeof getFirestore>;
-  storage = {} as ReturnType<typeof getStorage>;
+  auth = {} as AuthInstance;
+  db = {} as Firestore;
+  storage = {} as FirebaseStorage;
+}
+
+setDummyFirebaseExports();
+
+function wireFirestoreAndStorage(firebaseApp: FirebaseApp) {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getFirestore } =
+    require("@firebase/firestore") as typeof import("@firebase/firestore");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getStorage } =
+    require("@firebase/storage") as typeof import("@firebase/storage");
+  db = getFirestore(firebaseApp);
+  storage = getStorage(firebaseApp);
 }
 
 try {
-  const existingApps = getApps();
-  if (existingApps.length > 0) {
-    app = existingApps[0];
-    auth = getAuth(app);
-    db = getFirestore(app);
-    storage = getStorage(app);
-  } else if (!isFirebaseConfigured) {
+  if (!isFirebaseConfigured) {
     if (__DEV__) {
-      console.error(
-        "[Firebase] Missing EXPO_PUBLIC_FIREBASE_* in `.env`. Copy `.env.example` to `.env` and paste values from Firebase Console → Project settings → Your apps."
+      console.warn(
+        "[Firebase] Paste your web app keys into firebaseConfig in src/firebaseConfig.ts."
       );
     }
     setDummyFirebaseExports();
+  } else if (getApps().length > 0) {
+    app = getApp();
+    auth = initAuthForApp(app);
+    wireFirestoreAndStorage(app);
+    isFirebaseReady = true;
   } else {
     app = initializeApp(firebaseConfig);
-
-    auth = initializeAuth(app, {
-      persistence: getReactNativePersistence(AsyncStorage),
-    });
-
-    db = initializeFirestore(app, {
-      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
-    });
-    storage = getStorage(app);
+    auth = initAuthForApp(app);
+    wireFirestoreAndStorage(app);
+    isFirebaseReady = true;
   }
 } catch (error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -76,5 +121,16 @@ try {
   setDummyFirebaseExports();
 }
 
-// Export
-export { auth, db, storage, app };
+export {
+  app,
+  auth,
+  db,
+  storage,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  sendPasswordResetEmail,
+  updateProfile,
+  deleteUser,
+};

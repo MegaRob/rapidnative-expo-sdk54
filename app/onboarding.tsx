@@ -1,6 +1,5 @@
 import { useRouter } from "expo-router";
-import { updateProfile } from "firebase/auth";
-import { doc, updateDoc } from "firebase/firestore";
+import { doc, getDoc, updateDoc } from "firebase/firestore";
 import {
   ArrowRight,
   Check,
@@ -28,7 +27,8 @@ import {
   View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { auth, db } from "../src/firebaseConfig";
+import { auth, db, updateProfile } from "../src/firebaseConfig";
+import { syncUserPublicDisplay } from "../utils/userProfile";
 import { getCoordinatesForCity } from "../utils/geolocationUtils";
 import LocationModal, { LocationModalHandle } from "./components/LocationModal";
 
@@ -191,6 +191,11 @@ export default function OnboardingScreen() {
         preferredRadius: prefRadius,
         onboardingComplete: true,
       });
+
+      const afterSnap = await getDoc(userDocRef);
+      if (afterSnap.exists()) {
+        await syncUserPublicDisplay(user.uid, afterSnap.data() as Record<string, unknown>);
+      }
 
       router.replace("/(tabs)");
     } catch (error) {

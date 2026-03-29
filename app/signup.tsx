@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { doc, setDoc, Timestamp } from "firebase/firestore";
+import { syncUserPublicDisplay, userPrivateAccountRef } from '../utils/userProfile';
 import { Mountain } from 'lucide-react-native';
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import KeyboardScreen from './components/KeyboardScreen';
-import { auth, db } from '../src/firebaseConfig';
+import { auth, createUserWithEmailAndPassword, db } from "@/src/firebaseConfig";
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -77,9 +77,8 @@ export default function SignUpScreen() {
 
       if (user) {
         const userDocRef = doc(db, "users", user.uid);
-        await setDoc(userDocRef, {
+        const initialRoot = {
           uid: user.uid,
-          email: user.email,
           onboardingComplete: false,
           createdAt: Timestamp.now(),
           username: "NewUser",
@@ -92,7 +91,14 @@ export default function SignUpScreen() {
           preferredRadius: 0,
           matchedTrails: [],
           friends: []
-        });
+        };
+        await setDoc(userDocRef, initialRoot);
+        await syncUserPublicDisplay(user.uid, initialRoot as Record<string, unknown>);
+        await setDoc(
+          userPrivateAccountRef(user.uid),
+          { email: user.email ?? null },
+          { merge: true }
+        );
 
         setIsLoading(false);
         router.replace('/onboarding');

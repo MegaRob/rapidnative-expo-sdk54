@@ -1,8 +1,8 @@
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
-import { doc, setDoc } from 'firebase/firestore';
-import { auth, db } from '../src/firebaseConfig';
+import { auth } from '../src/firebaseConfig';
+import { updatePrivateAccount } from './userProfile';
 
 // expo-notifications remote push was removed from Expo Go in SDK 53.
 // Lazy-require so everything degrades gracefully in Expo Go.
@@ -105,8 +105,7 @@ export async function savePushTokenToFirestore(token: string): Promise<void> {
   if (!user || !token) return;
 
   try {
-    const userRef = doc(db, 'users', user.uid);
-    await setDoc(userRef, { expoPushToken: token }, { merge: true });
+    await updatePrivateAccount(user.uid, { expoPushToken: token });
   } catch (error) {
     console.error('Error saving push token:', error);
   }
@@ -120,8 +119,7 @@ export async function removePushTokenFromFirestore(): Promise<void> {
   if (!user) return;
 
   try {
-    const userRef = doc(db, 'users', user.uid);
-    await setDoc(userRef, { expoPushToken: null }, { merge: true });
+    await updatePrivateAccount(user.uid, { expoPushToken: null });
   } catch (error) {
     console.error('Error removing push token:', error);
   }

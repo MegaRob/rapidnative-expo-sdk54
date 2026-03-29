@@ -1,40 +1,20 @@
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation, useRouter } from 'expo-router';
-import { signOut, updateProfile } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, query, updateDoc, where } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { ArrowLeft } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Button, Image, Linking, Pressable, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { auth, db, storage } from '../src/firebaseConfig';
-
-// Define a type for our user data based on the PRD
-interface UserData {
-  firstName?: string;
-  lastName?: string;
-  name?: string;
-  username?: string;
-  displayName?: string;
-  email?: string;
-  hometown?: string;
-  bio?: string;
-  location?: string;
-  primaryDistance?: string;
-  preferredTerrain?: string;
-  paceRange?: string;
-  lookingFor?: string[];
-  openDMs?: boolean;
-  pace?: string;
-  avatarUrl?: string;
-  // Add other fields from your PRD if needed
-}
+import { auth, db, signOut, storage, updateProfile } from '../src/firebaseConfig';
+import { useCurrentUserProfile } from '../hooks/useCurrentUserProfile';
+import type { MergedUserProfile } from '../types/user';
+import { syncUserPublicDisplay } from '../utils/userProfile';
 
 export default function ProfileScreen() {
   const router = useRouter();
   const navigation = useNavigation();
-  const [userData, setUserData] = useState<UserData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { profile: userData, loading } = useCurrentUserProfile();
   const [profileImageUrl, setProfileImageUrl] = useState<string | null>(null);
   const [completedCount, setCompletedCount] = useState(0);
   const user = auth.currentUser;
@@ -47,31 +27,10 @@ export default function ProfileScreen() {
   }, [navigation]);
 
   useEffect(() => {
-    const fetchUserData = async () => {
-      if (user) {
-        try {
-          const userDocRef = doc(db, "users", user.uid);
-          const userDoc = await getDoc(userDocRef);
-          if (userDoc.exists()) {
-            const data = userDoc.data() as UserData;
-            setUserData(data);
-            // Set profile image from user's photoURL or avatarUrl
-            setProfileImageUrl(data.avatarUrl || user.photoURL || null);
-          } else {
-            // No user document found
-          }
-        } catch (error) {
-          console.error("Error fetching user data: ", error);
-        } finally {
-          setLoading(false);
-        }
-      } else {
-        setLoading(false);
-      }
-    };
-
-    fetchUserData();
-  }, [user]); // Re-run if the user changes
+    if (!userData) return;
+    const data = userData as MergedUserProfile;
+    setProfileImageUrl(data.avatarUrl || user?.photoURL || null);
+  }, [userData, user?.photoURL]);
 
   useEffect(() => {
     const fetchCompletedCount = async () => {
@@ -120,10 +79,14 @@ export default function ProfileScreen() {
       // 2. Update the Firestore user document
       const userDocRef = doc(db, 'users', uid);
       await updateDoc(userDocRef, { photoURL: downloadURL, avatarUrl: downloadURL });
+      const afterPhoto = await getDoc(userDocRef);
+      if (afterPhoto.exists()) {
+        await syncUserPublicDisplay(uid, afterPhoto.data() as Record<string, unknown>);
+      }
 
       // Update the local state so the new image appears instantly
       setProfileImageUrl(downloadURL);
-      setUserData(prev => prev ? { ...prev, avatarUrl: downloadURL } : null);
+      // Avatar lives on root user doc; hook will refresh merged profile
     } catch (error) {
       console.error("Error uploading image:", error);
       Alert.alert("Error", "Failed to upload image.");

@@ -7,7 +7,6 @@ import {
   View,
   Platform,
 } from "react-native";
-import { onAuthStateChanged } from "firebase/auth";
 import {
   collection,
   doc,
@@ -20,7 +19,7 @@ import {
   where,
   writeBatch,
 } from "firebase/firestore";
-import { auth, db } from "../../src/firebaseConfig";
+import { auth, db, onAuthStateChanged } from "../../src/firebaseConfig";
 import GuideBuilder from "./guide-builder";
 
 type TabId = "overview" | "editor" | "guide" | "roster" | "race-day" | "results";

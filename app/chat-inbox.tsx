@@ -1,10 +1,11 @@
 import { useFocusEffect, useNavigation, useRouter } from 'expo-router';
-import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, limit, orderBy, query, updateDoc, where } from 'firebase/firestore';
 import { ArrowLeft } from 'lucide-react-native';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Image, InteractionManager, Pressable, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { auth, db } from '../src/firebaseConfig';
+import { auth, db, isFirebaseReady, onAuthStateChanged } from '../src/firebaseConfig';
+import { fetchPeerDisplayForInbox } from '../utils/userProfile';
 
 // Helper to create a unique chat ID
 const getChatId = (uid1: string, uid2: string) => {
@@ -63,10 +64,27 @@ interface GroupedChats {
 export default function ChatInboxScreen() {
   const [groupedChats, setGroupedChats] = useState<GroupedChats>({});
   const [loading, setLoading] = useState(true);
+  /** Drives refetch when auth resolves after mount (auth.currentUser alone does not re-render). */
+  const [authUid, setAuthUid] = useState<string | null>(() => auth.currentUser?.uid ?? null);
 
-  const user = auth.currentUser;
+  /** Race sections ordered by most recent message in that group (newest activity at top). */
+  const orderedRaceSections = useMemo(() => {
+    const entries = Object.entries(groupedChats);
+    const maxLastMsg = (buddies: Buddy[]) =>
+      buddies.reduce((max, b) => Math.max(max, b.lastMessageTime?.getTime() ?? 0), 0);
+    return [...entries].sort(([, a], [, b]) => maxLastMsg(b) - maxLastMsg(a));
+  }, [groupedChats]);
+
   const router = useRouter();
   const navigation = useNavigation();
+
+  useEffect(() => {
+    if (!isFirebaseReady) return;
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setAuthUid(u?.uid ?? null);
+    });
+    return () => unsub();
+  }, [isFirebaseReady]);
 
   // Hide the default header (removes "(tabs)" back label and "chat-inbox" title)
   useEffect(() => {
@@ -74,101 +92,132 @@ export default function ChatInboxScreen() {
   }, [navigation]);
 
   const fetchAllBuddies = useCallback(async () => {
-      if (!user) {
+      if (!isFirebaseReady) {
         setLoading(false);
-        return; // Not logged in
+        return;
+      }
+
+      const user = auth.currentUser;
+      if (!user) {
+        setGroupedChats({});
+        setLoading(false);
+        return;
       }
 
       try {
-        // 1. Get all of the current user's matches to find potential chat partners
-        const myMatchesQuery = query(collection(db, 'matches'), where('userId', '==', user.uid));
-        const myMatchesSnapshot = await getDocs(myMatchesQuery);
-        const myMatches = myMatchesSnapshot.docs.map(doc => ({
-          trailId: doc.data().trailId,
-          doc: doc
-        }));
-        const myTrailIds = myMatches.map(m => m.trailId);
+        type UserChatRow = {
+          chatDoc: { id: string; data: Record<string, unknown> };
+          trailId?: string;
+          buddyId: string;
+        };
 
-        if (myTrailIds.length === 0) {
-          setLoading(false);
-          return;
+        let userChats: UserChatRow[] = [];
+
+        // 1) Primary: every chat doc that lists this user (works after register — match docs are removed)
+        const myChatsSnap = await getDocs(
+          query(collection(db, "chats"), where("userIds", "array-contains", user.uid))
+        );
+        for (const d of myChatsSnap.docs) {
+          const data = d.data() as Record<string, unknown>;
+          const userIds = Array.isArray(data.userIds) ? (data.userIds as string[]) : [];
+          const buddyId = userIds.find((id) => typeof id === "string" && id.length > 0 && id !== user.uid);
+          if (!buddyId) continue;
+          const trailId =
+            typeof data.trailId === "string" && data.trailId.length > 0 ? data.trailId : undefined;
+          userChats.push({
+            chatDoc: { id: d.id, data },
+            trailId,
+            buddyId,
+          });
         }
 
-        // 2. Find all other matches for those same trails to get potential buddy IDs
-        // Firestore 'IN' operator supports max 30 values — fire ALL batches in parallel
-        const matchBatchPromises = [];
-        for (let i = 0; i < myTrailIds.length; i += 30) {
-          const batch = myTrailIds.slice(i, i + 30);
-          matchBatchPromises.push(getDocs(query(collection(db, 'matches'), where('trailId', 'in', batch))));
-        }
-        const allMatchesSnapshots = await Promise.all(matchBatchPromises);
-        
-        // Combine all results
-        const allMatchesDocs = allMatchesSnapshots.flatMap(snapshot => snapshot.docs);
+        // 2) Fallback: discover buddies via shared matches, then load chat by deterministic id
+        if (userChats.length === 0) {
+          const myMatchesQuery = query(collection(db, "matches"), where("userId", "==", user.uid));
+          const myMatchesSnapshot = await getDocs(myMatchesQuery);
+          const myMatches = myMatchesSnapshot.docs.map((d) => ({
+            trailId: d.data().trailId as string,
+            doc: d,
+          }));
+          const myTrailIds = myMatches.map((m) => m.trailId).filter(Boolean);
 
-        // 3. Create a map of buddyId -> shared trailIds
-        const buddyTrailMap = new Map<string, string[]>(); // buddyId -> array of shared trailIds
-        allMatchesDocs.forEach(matchDoc => {
-          const matchData = matchDoc.data();
-          const matchUserId = matchData.userId;
-          const matchTrailId = matchData.trailId;
-          
-          if (matchUserId !== user.uid && myTrailIds.includes(matchTrailId)) {
-            if (!buddyTrailMap.has(matchUserId)) {
-              buddyTrailMap.set(matchUserId, []);
-            }
-            buddyTrailMap.get(matchUserId)!.push(matchTrailId);
+          if (myTrailIds.length === 0) {
+            setGroupedChats({});
+            setLoading(false);
+            return;
           }
-        });
-        
-        const buddyIds = Array.from(buddyTrailMap.keys());
 
-        if (buddyIds.length === 0) {
-          setLoading(false);
-          return;
-        }
+          const matchBatchPromises = [];
+          for (let i = 0; i < myTrailIds.length; i += 30) {
+            const batch = myTrailIds.slice(i, i + 30);
+            matchBatchPromises.push(
+              getDocs(query(collection(db, "matches"), where("trailId", "in", batch)))
+            );
+          }
+          const allMatchesSnapshots = await Promise.all(matchBatchPromises);
+          const allMatchesDocs = allMatchesSnapshots.flatMap((snapshot) => snapshot.docs);
 
-        // 4. Fetch ALL chat documents in PARALLEL (instead of one-by-one)
-        if (!auth.currentUser) return;
-        const chatFetchPromises = buddyIds.map(async (buddyId) => {
-          const chatId = getChatId(user.uid, buddyId);
-          try {
-            const chatDocRef = doc(db, 'chats', chatId);
-            const chatDoc = await getDoc(chatDocRef);
-            if (chatDoc.exists()) {
-              const chatData = chatDoc.data();
-              const trailId = chatData.trailId || (buddyTrailMap.get(buddyId)?.[0]);
-              if (trailId) {
-                return { chatDoc: { id: chatDoc.id, data: chatData }, trailId, buddyId };
+          const buddyTrailMap = new Map<string, string[]>();
+          allMatchesDocs.forEach((matchDoc) => {
+            const matchData = matchDoc.data();
+            const matchUserId = matchData.userId as string;
+            const matchTrailId = matchData.trailId as string;
+            if (matchUserId !== user.uid && myTrailIds.includes(matchTrailId)) {
+              if (!buddyTrailMap.has(matchUserId)) buddyTrailMap.set(matchUserId, []);
+              buddyTrailMap.get(matchUserId)!.push(matchTrailId);
+            }
+          });
+
+          const buddyIds = Array.from(buddyTrailMap.keys());
+          if (buddyIds.length === 0) {
+            setGroupedChats({});
+            setLoading(false);
+            return;
+          }
+
+          if (!auth.currentUser) return;
+          const chatFetchPromises = buddyIds.map(async (buddyId) => {
+            const chatId = getChatId(user.uid, buddyId);
+            try {
+              const chatDocRef = doc(db, "chats", chatId);
+              const chatDoc = await getDoc(chatDocRef);
+              if (chatDoc.exists()) {
+                const chatData = chatDoc.data() as Record<string, unknown>;
+                const trailId =
+                  (typeof chatData.trailId === "string" ? chatData.trailId : undefined) ||
+                  buddyTrailMap.get(buddyId)?.[0];
+                return {
+                  chatDoc: { id: chatDoc.id, data: chatData },
+                  trailId: trailId || undefined,
+                  buddyId,
+                };
               }
+            } catch {
+              /* skip */
             }
-          } catch (error) {
-            // Chat doesn't exist or permission denied - skip it
-          }
-          return null;
-        });
-        const chatResults = await Promise.all(chatFetchPromises);
-        const userChats = chatResults.filter((r): r is NonNullable<typeof r> => r !== null);
+            return null;
+          });
+          const chatResults = await Promise.all(chatFetchPromises);
+          userChats = chatResults.filter((r) => r !== null) as UserChatRow[];
+        }
 
         if (userChats.length === 0) {
+          setGroupedChats({});
           setLoading(false);
           return;
         }
 
-        // 5. Collect unique trailIds and buddy user IDs we need to fetch
+        // 3. Collect unique trailIds and buddy user IDs we need to fetch
         const trailIdsToFetch = new Set<string>();
         const buddyIdsToFetch = new Set<string>();
-        const chatTrailMap = new Map<string, string>(); // chatId -> trailId
+        const chatTrailMap = new Map<string, string>();
 
         userChats.forEach(({ chatDoc, trailId, buddyId }) => {
           if (trailId) {
             trailIdsToFetch.add(trailId);
             chatTrailMap.set(chatDoc.id, trailId);
           }
-          // Figure out the other user ID from userIds array
-          const userIds = chatDoc.data.userIds || [];
-          const otherUserId = userIds.find((uid: string) => uid !== user.uid);
-          if (otherUserId) buddyIdsToFetch.add(otherUserId);
+          buddyIdsToFetch.add(buddyId);
         });
 
         // 6. Fetch ALL trail names + ALL buddy profiles + ALL last messages in PARALLEL
@@ -188,10 +237,8 @@ export default function ChatInboxScreen() {
         // Buddy profile fetches (parallel)
         const buddyProfilePromises = Array.from(buddyIdsToFetch).map(async (buddyId) => {
           try {
-            const userDoc = await getDoc(doc(db, 'users', buddyId));
-            if (userDoc.exists()) {
-              return { buddyId, data: userDoc.data() };
-            }
+            const data = await fetchPeerDisplayForInbox(buddyId);
+            if (data) return { buddyId, data };
           } catch (error) { /* skip */ }
           return { buddyId, data: null };
         });
@@ -200,9 +247,15 @@ export default function ChatInboxScreen() {
         const lastMessagePromises = userChats.map(async ({ chatDoc }) => {
           // Fast path: use lastMessageAt stored directly on the chat document
           const chatData = chatDoc.data;
-          if (chatData.lastMessageAt) {
-            const ts = chatData.lastMessageAt;
-            const lastMessageTime = ts.toDate ? ts.toDate() : (ts.seconds ? new Date(ts.seconds * 1000) : null);
+          const rawLast = chatData.lastMessageAt as
+            | { toDate?: () => Date; seconds?: number }
+            | undefined;
+          if (rawLast && typeof rawLast === "object") {
+            const lastMessageTime = rawLast.toDate
+              ? rawLast.toDate()
+              : rawLast.seconds != null
+                ? new Date(rawLast.seconds * 1000)
+                : null;
             if (lastMessageTime) return { chatId: chatDoc.id, lastMessageTime };
           }
           // Slow fallback: query messages subcollection (only for old chats without lastMessageAt)
@@ -248,31 +301,36 @@ export default function ChatInboxScreen() {
         // 7. Assemble enriched chat list (no more network calls needed)
         const enrichedChats: Buddy[] = [];
         
-        for (const { chatDoc, trailId: chatTrailId } of userChats) {
+        for (const { chatDoc, trailId: chatTrailId, buddyId } of userChats) {
           const chatData = chatDoc.data;
-          const userIds = chatData.userIds || [];
-          const otherUserId = userIds.find((uid: string) => uid !== user.uid);
+          const rawIds = chatData.userIds;
+          const userIds = Array.isArray(rawIds) ? (rawIds as string[]) : [];
+          const otherUserId =
+            userIds.find((uid: string) => uid !== user.uid) ?? buddyId;
           if (!otherUserId) continue;
 
           const userData = buddyProfileMap.get(otherUserId);
-          if (!userData) continue;
-
-          const username = userData.username || '';
-          const displayName = (username.trim() === '' || username === 'NewUser') ? 'Runner' : username;
+          const username = (userData?.username as string) || "";
+          const displayName =
+            username.trim() === "" || username === "NewUser" ? "Runner" : username;
 
           const trailId = chatTrailMap.get(chatDoc.id) || chatTrailId;
-          const raceName = trailId && trailNamesMap.has(trailId) 
-            ? trailNamesMap.get(trailId)! 
-            : 'Unknown Race';
+          const raceName =
+            trailId && trailNamesMap.has(trailId)
+              ? trailNamesMap.get(trailId)!
+              : "Unknown Race";
 
           enrichedChats.push({
             id: otherUserId,
             username: displayName,
-            bio: userData.bio || 'No bio available',
-            avatarUrl: userData.avatarUrl || userData.photoURL || null,
+            bio: (userData?.bio as string) || "No bio available",
+            avatarUrl:
+              (userData?.avatarUrl as string) ||
+              (userData?.photoURL as string) ||
+              null,
             lastMessageTime: lastMessageMap.get(chatDoc.id) || null,
-            raceName: raceName,
-            chatId: chatDoc.id
+            raceName,
+            chatId: chatDoc.id,
           });
         }
 
@@ -296,7 +354,7 @@ export default function ChatInboxScreen() {
           grouped[raceName].push(buddy);
         });
 
-        // 10. Sort chats within each group by last message time
+        // 10. Sort chats within each group by last message time (most recent first)
         Object.keys(grouped).forEach(raceName => {
           grouped[raceName].sort((a, b) => {
             if (a.lastMessageTime && b.lastMessageTime) {
@@ -317,45 +375,28 @@ export default function ChatInboxScreen() {
       } finally {
         setLoading(false);
       }
-    }, [user]);
+    }, [isFirebaseReady]);
 
-  // Fetch buddies on mount
+  // Refetch when auth becomes available (useFocusEffect alone may not re-run until next blur/focus).
   useEffect(() => {
+    if (!isFirebaseReady || !authUid) return;
     fetchAllBuddies();
-  }, [fetchAllBuddies]);
+  }, [authUid, isFirebaseReady, fetchAllBuddies]);
 
-  // Refresh buddies when screen comes into focus (new messages might have arrived).
-  // Deferred until after navigation transition finishes to prevent jank.
+  // On focus (including first mount): clear global unread badge, then refresh list.
   useFocusEffect(
     useCallback(() => {
       const task = InteractionManager.runAfterInteractions(() => {
+        const uid = auth.currentUser?.uid;
+        if (uid && isFirebaseReady) {
+          updateDoc(doc(db, 'users', uid), { hasUnreadMessages: false }).catch((e) => {
+            console.error('Failed to clear notification flag:', e);
+          });
+        }
         fetchAllBuddies();
       });
       return () => task.cancel();
-    }, [fetchAllBuddies])
-  );
-
-  // Clear the unread messages flag when the screen is focused
-  useFocusEffect(
-    useCallback(() => {
-      const task = InteractionManager.runAfterInteractions(() => {
-        const clearNotification = async () => {
-          if (auth.currentUser) {
-            const uid = auth.currentUser.uid;
-            const userDocRef = doc(db, 'users', uid);
-            try {
-              await setDoc(userDocRef, {
-                hasUnreadMessages: false
-              }, { merge: true }); 
-            } catch (e) {
-              console.error("Failed to clear notification flag:", e);
-            }
-          }
-        };
-        clearNotification();
-      });
-      return () => task.cancel();
-    }, [])
+    }, [fetchAllBuddies, isFirebaseReady])
   );
 
   // --- Render Logic ---
@@ -384,11 +425,11 @@ export default function ChatInboxScreen() {
       </View>
 
       <View className="flex-1 px-4">
-        {Object.keys(groupedChats).length === 0 ? (
+        {orderedRaceSections.length === 0 ? (
           <Text className="text-base text-gray-400 text-center mt-12">No chats found yet. Start a conversation!</Text>
         ) : (
           <FlatList
-            data={Object.entries(groupedChats)}
+            data={orderedRaceSections}
             keyExtractor={([raceName]) => raceName}
             contentContainerStyle={{ paddingBottom: 20 }}
             showsVerticalScrollIndicator={false}

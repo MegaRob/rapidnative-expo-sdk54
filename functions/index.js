@@ -7,11 +7,194 @@ admin.initializeApp();
 
 const expo = new Expo();
 
+// ─── users/{uid}/private/account (PII) + root merge ────────────────────────────
+function usersPrivateAccountRef(db, uid) {
+  return db.collection("users").doc(uid).collection("private").doc("account");
+}
+
+/** Root user doc merged with private/account (private wins on key overlap). */
+async function getMergedUserProfile(db, uid) {
+  const rootSnap = await db.collection("users").doc(uid).get();
+  const privSnap = await usersPrivateAccountRef(db, uid).get();
+  const root = rootSnap.exists ? rootSnap.data() : {};
+  const priv = privSnap.exists ? privSnap.data() : {};
+    return { ...root, ...priv };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Admin audit log (trails / registrations / payments onUpdate → audit_logs;
+// trail onDelete → audit_logs/deletions/trails/{trailId} tombstones)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Firestore triggers do not expose context.auth — the writer’s UID is unknown here.
+// Optional fields on the document enable attribution: lastModifiedByUid, updatedByUid,
+// lastModifiedBy, updatedBy, editedByUid (string UIDs). Otherwise adminUid is null.
+
+const AUDIT_IGNORED_FIELDS = new Set([
+  "updatedAt",
+  "lastHeartbeat",
+  "lastHeatbeat",
+  "lastActive",
+  "lastActiveAt",
+  "lastSeen",
+  "lastOnlineAt",
+  "lastModified",
+  "modifiedAt",
+  "serverTimestamp",
+]);
+
+function serializeAuditValue(val) {
+  if (val === null || val === undefined) return val;
+  if (val instanceof admin.firestore.Timestamp) {
+    return { __type: "timestamp", iso: val.toDate().toISOString() };
+  }
+  if (val && typeof val === "object" && typeof val.latitude === "number" && typeof val.longitude === "number") {
+    return { __type: "geoPoint", latitude: val.latitude, longitude: val.longitude };
+  }
+  if (Array.isArray(val)) return val.map((v) => serializeAuditValue(v));
+  if (val && typeof val === "object") {
+    const out = {};
+    for (const k of Object.keys(val)) {
+      out[k] = serializeAuditValue(val[k]);
+    }
+    return out;
+  }
+  return val;
+}
+
+function auditValuesEqual(a, b) {
+  if (a === b) return true;
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return false;
+  if (a instanceof admin.firestore.Timestamp && b instanceof admin.firestore.Timestamp) {
+    return a.seconds === b.seconds && a.nanoseconds === b.nanoseconds;
+  }
+  try {
+    return JSON.stringify(serializeAuditValue(a)) === JSON.stringify(serializeAuditValue(b));
+  } catch {
+    return false;
+  }
+}
+
+function diffForAudit(beforeData, afterData) {
+  const b = beforeData && typeof beforeData === "object" ? beforeData : {};
+  const a = afterData && typeof afterData === "object" ? afterData : {};
+  const keys = new Set([...Object.keys(b), ...Object.keys(a)]);
+  const changes = {};
+  for (const key of keys) {
+    if (AUDIT_IGNORED_FIELDS.has(key)) continue;
+    const oldVal = b[key];
+    const newVal = a[key];
+    if (auditValuesEqual(oldVal, newVal)) continue;
+    changes[key] = {
+      old: serializeAuditValue(oldVal),
+      new: serializeAuditValue(newVal),
+    };
+  }
+  return changes;
+}
+
+function pickAuditActorUid(after, before) {
+  const candidates = [after, before];
+  const fieldNames = ["lastModifiedByUid", "updatedByUid", "lastModifiedBy", "updatedBy", "editedByUid"];
+  for (const data of candidates) {
+    if (!data || typeof data !== "object") continue;
+    for (const fn of fieldNames) {
+      const v = data[fn];
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+  }
+  return null;
+}
+
+async function fetchAuditAdminDisplayName(db, uid) {
+  if (!uid) return null;
+  try {
+    const userSnap = await db.collection("users").doc(uid).get();
+    if (userSnap.exists) {
+      const d = userSnap.data();
+      return d.displayName || d.name || d.username || null;
+    }
+  } catch (e) {
+    console.warn("fetchAuditAdminDisplayName:", e.message);
+  }
+  return null;
+}
+
+async function writeAuditLogEntry({ collectionName, docId, change, action }) {
+  const db = admin.firestore();
+  const before = change.before.exists ? change.before.data() : {};
+  const after = change.after.exists ? change.after.data() : {};
+  const changes = diffForAudit(before, after);
+  if (Object.keys(changes).length === 0) return;
+
+  const adminUid = pickAuditActorUid(after, before);
+  const adminName = await fetchAuditAdminDisplayName(db, adminUid);
+
+  await db.collection("audit_logs").add({
+    collection: collectionName,
+    adminUid,
+    adminName,
+    action,
+    targetId: docId,
+    changes,
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+function resolvePaymentAuditAction(change) {
+  const before = change.before.exists ? change.before.data() : {};
+  const after = change.after.exists ? change.after.data() : {};
+  if (after.status === "refunded" && before.status !== "refunded") return "REFUND_ISSUED";
+  if (after.refundId && !before.refundId) return "REFUND_ISSUED";
+  return "UPDATE_PAYMENT";
+}
+
+/**
+ * Full trail snapshot before delete — stored under audit_logs/deletions/trails/{trailId}
+ * for manual restore (Firestore doc limit 1MB).
+ */
+async function writeTrailDeletionTombstone(trailId, snapshotData) {
+  const db = admin.firestore();
+  const deletedByUid = pickAuditActorUid(snapshotData, {});
+  const deletedByName = await fetchAuditAdminDisplayName(db, deletedByUid);
+
+  const tombstoneRef = db
+    .collection("audit_logs")
+    .doc("deletions")
+    .collection("trails")
+    .doc(trailId);
+
+  await tombstoneRef.set({
+    kind: "TRAIL_TOMBSTONE",
+    collection: "trails",
+    trailId,
+    action: "DELETE_TRAIL",
+    tombstone: snapshotData,
+    deletedByUid: deletedByUid || null,
+    deletedByName: deletedByName || null,
+    deletedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
 // ─── Stripe Setup ────────────────────────────────────────────────────────────
-// Configure via functions/.env file:
-//   STRIPE_SECRET_KEY=sk_live_...
+// Server-only: set STRIPE_SECRET_KEY via Firebase Secret Manager / env, or legacy:
+//   firebase functions:config:set stripe.secret="sk_..."   (or stripe.secret_key)
+//   Do NOT put secret keys in the client app or EXPO_PUBLIC_*.
+// Local emulator: `functions/.env` with STRIPE_SECRET_KEY= (see functions/.env.example)
 //   PLATFORM_FEE_PERCENT=5
-const stripeSecretKey = process.env.STRIPE_SECRET_KEY || "";
+function getStripeSecretKey() {
+  const fromEnv = (process.env.STRIPE_SECRET_KEY || "").trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const cfg = typeof functions.config === "function" ? functions.config() : {};
+    const stripe = cfg && cfg.stripe ? cfg.stripe : {};
+    return (stripe.secret || stripe.secret_key || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+const stripeSecretKey = getStripeSecretKey();
 const PLATFORM_FEE_PERCENT = parseFloat(process.env.PLATFORM_FEE_PERCENT || "5");
 const stripe = stripeSecretKey ? require("stripe")(stripeSecretKey) : null;
 
@@ -90,7 +273,6 @@ exports.approveRaceAndCreateDirector = functions.https.onCall(async (data, conte
   const now = admin.firestore.FieldValue.serverTimestamp();
 
   const directorPayload = {
-    email: directorEmail,
     name: directorName || requestData.contactName || "",
     role: "director",
     updatedAt: now,
@@ -102,9 +284,14 @@ exports.approveRaceAndCreateDirector = functions.https.onCall(async (data, conte
     directorPayload.tempPasswordIssuedAt = now;
   }
 
-  await admin.firestore().collection("users").doc(userRecord.uid).set(directorPayload, {
+  const db = admin.firestore();
+  await db.collection("users").doc(userRecord.uid).set(directorPayload, {
     merge: true,
   });
+  await usersPrivateAccountRef(db, userRecord.uid).set(
+    { email: directorEmail },
+    { merge: true }
+  );
 
   // Normalize distances array — support both new per-distance format and legacy flat fields
   let distancesArray = [];
@@ -295,10 +482,9 @@ exports.generateDirectorResetLink = functions.https.onCall(async (data, context)
 
   let email = directorEmail;
   if (!email && directorId) {
-    const directorSnap = await admin.firestore().collection("users").doc(directorId).get();
-    if (directorSnap.exists) {
-      email = String(directorSnap.get("email") || "").trim().toLowerCase();
-    }
+    const db = admin.firestore();
+    const merged = await getMergedUserProfile(db, directorId);
+    email = String(merged.email || "").trim().toLowerCase();
   }
 
   if (!email) {
@@ -352,17 +538,16 @@ exports.onNewChatMessage = functions.firestore
       return null;
     }
 
-    // Get sender's doc (for name AND push token comparison)
-    const senderDoc = await admin.firestore().collection("users").doc(senderId).get();
-    const senderData = senderDoc.exists ? senderDoc.data() : {};
+    const db = admin.firestore();
+    // Sender / recipient: merged root + private/account (expoPushToken lives in private)
+    const senderData = await getMergedUserProfile(db, senderId);
     const senderName = senderData.username || senderData.name || "Someone";
     const senderPushToken = senderData.expoPushToken || null;
 
-    // Get recipient's push token
-    const recipientDoc = await admin.firestore().collection("users").doc(recipientId).get();
-    if (!recipientDoc.exists) return null;
+    const recipientRoot = await db.collection("users").doc(recipientId).get();
+    if (!recipientRoot.exists) return null;
 
-    const recipientData = recipientDoc.data();
+    const recipientData = await getMergedUserProfile(db, recipientId);
     const pushToken = recipientData.expoPushToken;
     if (!pushToken || !Expo.isExpoPushToken(pushToken)) return null;
 
@@ -395,6 +580,34 @@ exports.onNewChatMessage = functions.firestore
     return null;
   });
 
+// ─── New message → mark recipient has unread (global tab indicator) ─────────
+exports.onNewMessageUpdateUnread = functions.firestore
+  .document("chats/{chatId}/messages/{messageId}")
+  .onCreate(async (snap, context) => {
+    const { chatId } = context.params;
+    const senderId = snap.data()?.userId;
+    if (!senderId) return null;
+
+    const db = admin.firestore();
+    const chatDoc = await db.collection("chats").doc(chatId).get();
+    if (!chatDoc.exists) return null;
+
+    const chatData = chatDoc.data();
+    let userIds = chatData.userIds || [];
+    if (!userIds.length && typeof chatId === "string" && chatId.includes("_")) {
+      userIds = chatId.split("_");
+    }
+    const recipientId = userIds.find((uid) => uid !== senderId);
+    if (!recipientId || recipientId === senderId) return null;
+
+    const recipientRef = db.collection("users").doc(recipientId);
+    const recipientSnap = await recipientRef.get();
+    if (!recipientSnap.exists) return null;
+
+    await recipientRef.update({ hasUnreadMessages: true });
+    return null;
+  });
+
 // ─── Trigger: New chat invite (pending request) → push notification ─────────
 exports.onChatInvite = functions.firestore
   .document("chats/{chatId}")
@@ -412,17 +625,15 @@ exports.onChatInvite = functions.firestore
     const recipientId = userIds.find((uid) => uid !== requestedBy);
     if (!recipientId) return null;
 
-    // Get recipient's push token
-    const recipientDoc = await admin.firestore().collection("users").doc(recipientId).get();
-    if (!recipientDoc.exists) return null;
+    const db = admin.firestore();
+    const recipientRoot = await db.collection("users").doc(recipientId).get();
+    if (!recipientRoot.exists) return null;
 
-    const recipientData = recipientDoc.data();
+    const recipientData = await getMergedUserProfile(db, recipientId);
     const pushToken = recipientData.expoPushToken;
     if (!pushToken || !Expo.isExpoPushToken(pushToken)) return null;
 
-    // Get sender's name
-    const senderDoc = await admin.firestore().collection("users").doc(requestedBy).get();
-    const senderData = senderDoc.exists ? senderDoc.data() : {};
+    const senderData = await getMergedUserProfile(db, requestedBy);
     const senderName = senderData.username || senderData.name || "Someone";
 
     await sendExpoPushNotifications([
@@ -453,7 +664,10 @@ exports.createPaymentIntent = functions.https.onCall(async (data, context) => {
     throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
   }
   if (!stripe) {
-    throw new functions.https.HttpsError("failed-precondition", "Stripe is not configured. Set stripe.secret_key in Firebase Functions config.");
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "Stripe is not configured. Set STRIPE_SECRET_KEY (secret) or firebase functions:config:set stripe.secret / stripe.secret_key."
+    );
   }
 
   const { trailId, distance, amount } = data;
@@ -481,8 +695,8 @@ exports.createPaymentIntent = functions.https.onCall(async (data, context) => {
     }
   }
 
-  const userSnap = await admin.firestore().collection("users").doc(userId).get();
-  const userData = userSnap.exists ? userSnap.data() : {};
+  const db = admin.firestore();
+  const userData = await getMergedUserProfile(db, userId);
   let stripeCustomerId = userData.stripeCustomerId;
 
   if (!stripeCustomerId) {
@@ -491,7 +705,7 @@ exports.createPaymentIntent = functions.https.onCall(async (data, context) => {
       metadata: { firebaseUid: userId },
     });
     stripeCustomerId = customer.id;
-    await admin.firestore().collection("users").doc(userId).update({ stripeCustomerId: customer.id });
+    await usersPrivateAccountRef(db, userId).set({ stripeCustomerId: customer.id }, { merge: true });
   }
 
   const ephemeralKey = await stripe.ephemeralKeys.create(
@@ -1654,15 +1868,12 @@ exports.sendRaceReminders = functions
     const userIdArr = Array.from(allUserIds);
     for (let i = 0; i < userIdArr.length; i += BATCH) {
       const chunk = userIdArr.slice(i, i + BATCH);
-      const promises = chunk.map((uid) => db.collection("users").doc(uid).get());
-      const docs = await Promise.all(promises);
-      docs.forEach((doc) => {
-        if (doc.exists) {
-          const d = doc.data();
-          const token = d.expoPushToken;
-          if (token && Expo.isExpoPushToken(token)) {
-            userTokenMap.set(doc.id, { token, name: d.username || d.name || "Runner" });
-          }
+      const mergedList = await Promise.all(chunk.map((uid) => getMergedUserProfile(db, uid)));
+      chunk.forEach((uid, idx) => {
+        const d = mergedList[idx];
+        const token = d.expoPushToken;
+        if (token && Expo.isExpoPushToken(token)) {
+          userTokenMap.set(uid, { token, name: d.username || d.name || "Runner" });
         }
       });
     }
@@ -1743,12 +1954,12 @@ exports.sendWeeklyDigest = functions
 
     console.log(`Weekly digest: ${newTrails.length} new races this week`);
 
-    // 2. Get all users with push tokens and location
+    // 2. Get all users with push tokens and location (token may live in private/account)
     const usersSnap = await db.collection("users").get();
     const messages = [];
 
-    usersSnap.forEach((doc) => {
-      const d = doc.data();
+    for (const doc of usersSnap.docs) {
+      const d = await getMergedUserProfile(db, doc.id);
       const token = d.expoPushToken;
       if (!token || !Expo.isExpoPushToken(token)) return;
 
@@ -1767,7 +1978,7 @@ exports.sendWeeklyDigest = functions
             channelId: "race_reminders",
           });
         }
-        return;
+        continue;
       }
 
       // Count new races within 150 miles of this user
@@ -1801,7 +2012,7 @@ exports.sendWeeklyDigest = functions
           channelId: "race_reminders",
         });
       }
-    });
+    }
 
     if (messages.length > 0) {
       await sendExpoPushNotifications(messages);
@@ -1855,12 +2066,10 @@ exports.onNewRaceMatch = functions.firestore
 
     for (let i = 0; i < otherUserArr.length; i += BATCH) {
       const chunk = otherUserArr.slice(i, i + BATCH);
-      const promises = chunk.map((uid) => db.collection("users").doc(uid).get());
-      const docs = await Promise.all(promises);
+      const mergedList = await Promise.all(chunk.map((uid) => getMergedUserProfile(db, uid)));
 
-      docs.forEach((doc) => {
-        if (!doc.exists) return;
-        const d = doc.data();
+      chunk.forEach((uid, idx) => {
+        const d = mergedList[idx];
         const token = d.expoPushToken;
         if (!token || !Expo.isExpoPushToken(token)) return;
 
@@ -2532,4 +2741,307 @@ exports.manualFetchResults = functions
       checked: totalChecked,
     };
   });
+
+// ─── Custom Auth claims: admin roles ───────────────────────────────────────────
+// Callers with token.admin === true can promote/demote others.
+// First admin: use bootstrapInitialAdmin (one-time, secret + Firestore gate) or scripts/setInitialAdmin.js
+
+function getBootstrapSecret() {
+  return String(process.env.INITIAL_ADMIN_BOOTSTRAP_SECRET || "").trim();
+}
+
+/**
+ * Set or revoke Firebase Auth custom claim { admin: true } for another user.
+ * Security: only existing admins (custom claim) may call.
+ */
+exports.setAdminRole = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError("unauthenticated", "Authentication required.");
+  }
+
+  if (context.auth.token.admin !== true) {
+    throw new functions.https.HttpsError(
+      "permission-denied",
+      "Only users with the admin custom claim can change admin roles."
+    );
+  }
+
+  const targetUid = String(data?.uid || data?.targetUid || "").trim();
+  if (!targetUid) {
+    throw new functions.https.HttpsError("invalid-argument", "uid (target user) is required.");
+  }
+
+  const makeAdmin = data?.makeAdmin !== false;
+
+  try {
+    const userRecord = await admin.auth().getUser(targetUid);
+    const existing = { ...(userRecord.customClaims || {}) };
+
+    if (makeAdmin) {
+      existing.admin = true;
+    } else {
+      delete existing.admin;
+    }
+
+    await admin.auth().setCustomUserClaims(targetUid, existing);
+
+    return { success: true, uid: targetUid, admin: makeAdmin };
+  } catch (e) {
+    if (e.code === "auth/user-not-found") {
+      throw new functions.https.HttpsError("not-found", "User not found.");
+    }
+    console.error("setAdminRole:", e);
+    throw new functions.https.HttpsError("internal", "Failed to update custom claims.");
+  }
+});
+
+/**
+ * Set or revoke Firebase Auth custom claim { isDirector: true } and sync `role` on users/{uid}.
+ * Security: only callers with custom claim admin === true.
+ * Claims are merged with existing (e.g. admin is preserved).
+ */
+exports.setDirectorRole = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError("unauthenticated", "Authentication required.");
+  }
+
+  if (context.auth.token.admin !== true) {
+    throw new functions.https.HttpsError(
+      "permission-denied",
+      "Only users with the admin custom claim can change director roles."
+    );
+  }
+
+  const targetUid = String(data?.targetUid || data?.uid || "").trim();
+  if (!targetUid) {
+    throw new functions.https.HttpsError("invalid-argument", "targetUid is required.");
+  }
+
+  if (typeof data?.isDirector !== "boolean") {
+    throw new functions.https.HttpsError("invalid-argument", "isDirector (boolean) is required.");
+  }
+
+  const isDirector = data.isDirector;
+
+  try {
+    const userRecord = await admin.auth().getUser(targetUid);
+    const existing = { ...(userRecord.customClaims || {}) };
+
+    if (isDirector) {
+      existing.isDirector = true;
+    } else {
+      delete existing.isDirector;
+    }
+
+    await admin.auth().setCustomUserClaims(targetUid, existing);
+
+    const userRef = admin.firestore().collection("users").doc(targetUid);
+    if (isDirector) {
+      await userRef.set({ role: "director" }, { merge: true });
+    } else {
+      const snap = await userRef.get();
+      const currentRole = snap.exists ? snap.data().role : null;
+      if (currentRole === "director") {
+        await userRef.set({ role: "user" }, { merge: true });
+      }
+    }
+
+    return { success: true, uid: targetUid, isDirector };
+  } catch (e) {
+    if (e.code === "auth/user-not-found") {
+      throw new functions.https.HttpsError("not-found", "User not found.");
+    }
+    console.error("setDirectorRole:", e);
+    throw new functions.https.HttpsError("internal", "Failed to update director role.");
+  }
+});
+
+/**
+ * One-time bootstrap: grants admin to the *caller* if INITIAL_ADMIN_BOOTSTRAP_SECRET matches
+ * and system/adminBootstrap is not yet completed. No existing admin claim required.
+ * Remove or rotate the secret after first use; prefer scripts/setInitialAdmin.js for local ops.
+ */
+exports.bootstrapInitialAdmin = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError("unauthenticated", "Authentication required.");
+  }
+
+  const bootstrapSecret = getBootstrapSecret();
+  if (!bootstrapSecret) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "Bootstrap is disabled. Set INITIAL_ADMIN_BOOTSTRAP_SECRET on the function environment, or use scripts/setInitialAdmin.js."
+    );
+  }
+
+  const providedSecret = String(data?.secret || "").trim();
+  if (providedSecret !== bootstrapSecret) {
+    throw new functions.https.HttpsError("permission-denied", "Invalid secret.");
+  }
+
+  const bootstrapRef = admin.firestore().doc("system/adminBootstrap");
+  const snap = await bootstrapRef.get();
+  if (snap.exists && snap.data()?.completed === true) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "Initial admin has already been bootstrapped. Use setAdminRole or the Admin SDK script."
+    );
+  }
+
+  const uid = context.auth.uid;
+
+  try {
+    const userRecord = await admin.auth().getUser(uid);
+    const existing = { ...(userRecord.customClaims || {}) };
+    existing.admin = true;
+    await admin.auth().setCustomUserClaims(uid, existing);
+
+    await bootstrapRef.set(
+      {
+        completed: true,
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+        completedByUid: uid,
+      },
+      { merge: true }
+    );
+
+    return { success: true, uid, admin: true, bootstrapped: true };
+  } catch (e) {
+    console.error("bootstrapInitialAdmin:", e);
+    throw new functions.https.HttpsError("internal", "Failed to set initial admin claims.");
+  }
+});
+
+// ─── auditAdminActions: global audit log (onUpdate) ────────────────────────────
+// Three triggers; deploy all. Firestore triggers do not provide context.auth — see helpers above.
+
+exports.auditAdminActionsTrails = functions.firestore
+  .document("trails/{trailId}")
+  .onUpdate(async (change, context) => {
+    try {
+      await writeAuditLogEntry({
+        collectionName: "trails",
+        docId: context.params.trailId,
+        change,
+        action: "UPDATE_TRAIL",
+      });
+    } catch (e) {
+      console.error("auditAdminActionsTrails:", e);
+    }
+  });
+
+exports.auditAdminActionsTrailsOnDelete = functions.firestore
+  .document("trails/{trailId}")
+  .onDelete(async (snap, context) => {
+    const trailId = context.params.trailId;
+    const snapshotData = snap.data();
+    if (!snapshotData || typeof snapshotData !== "object") {
+      return;
+    }
+    try {
+      await writeTrailDeletionTombstone(trailId, snapshotData);
+    } catch (e) {
+      console.error("auditAdminActionsTrailsOnDelete:", e);
+    }
+  });
+
+exports.auditAdminActionsRegistrations = functions.firestore
+  .document("registrations/{registrationId}")
+  .onUpdate(async (change, context) => {
+    try {
+      await writeAuditLogEntry({
+        collectionName: "registrations",
+        docId: context.params.registrationId,
+        change,
+        action: "UPDATE_REGISTRATION",
+      });
+    } catch (e) {
+      console.error("auditAdminActionsRegistrations:", e);
+    }
+  });
+
+exports.auditAdminActionsPayments = functions.firestore
+  .document("payments/{paymentId}")
+  .onUpdate(async (change, context) => {
+    try {
+      await writeAuditLogEntry({
+        collectionName: "payments",
+        docId: context.params.paymentId,
+        change,
+        action: resolvePaymentAuditAction(change),
+      });
+    } catch (e) {
+      console.error("auditAdminActionsPayments:", e);
+    }
+  });
+
+/**
+ * Restore a deleted trail: writes tombstone payload to trails/{trailId}, then logs RESTORED_TRAIL.
+ * Callable only by admins. Pass `tombstone` from the client or omit to load from audit_logs/deletions/trails/{trailId}.
+ */
+exports.restoreDeletedTrail = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError("unauthenticated", "Authentication required.");
+  }
+  if (context.auth.token.admin !== true) {
+    throw new functions.https.HttpsError("permission-denied", "Only admins can restore trails.");
+  }
+
+  const trailId = String(data?.trailId || "").trim();
+  if (!trailId) {
+    throw new functions.https.HttpsError("invalid-argument", "trailId is required.");
+  }
+
+  const db = admin.firestore();
+  let snapshot = data?.tombstone;
+
+  if (!snapshot || typeof snapshot !== "object") {
+    const tombSnap = await db
+      .collection("audit_logs")
+      .doc("deletions")
+      .collection("trails")
+      .doc(trailId)
+      .get();
+    if (!tombSnap.exists) {
+      throw new functions.https.HttpsError(
+        "not-found",
+        "No tombstone found for this trail. It may have been removed or never deleted through the audit system."
+      );
+    }
+    snapshot = tombSnap.data().tombstone;
+  }
+
+  if (!snapshot || typeof snapshot !== "object") {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "Tombstone data is missing or invalid."
+    );
+  }
+
+  const adminUid = context.auth.uid;
+  let adminName = null;
+  try {
+    adminName = await fetchAuditAdminDisplayName(db, adminUid);
+  } catch (e) {
+    console.warn("restoreDeletedTrail: adminName", e?.message || e);
+  }
+
+  try {
+    await db.collection("trails").doc(trailId).set(snapshot);
+
+    await db.collection("audit_logs").add({
+      collection: "trails",
+      adminUid,
+      adminName: adminName || null,
+      action: "RESTORED_TRAIL",
+      targetId: trailId,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return { success: true, trailId };
+  } catch (e) {
+    console.error("restoreDeletedTrail:", e);
+    throw new functions.https.HttpsError("internal", "Failed to restore trail or write audit log.");
+  }
+});
 

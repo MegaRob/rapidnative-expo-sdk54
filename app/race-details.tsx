@@ -1,13 +1,13 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
-import { arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
+import { arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, serverTimestamp, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
 import { ArrowLeft, Calendar, Clock, Heart, Mountain, Share2, Star } from 'lucide-react-native';
 import { cssInterop } from 'nativewind';
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, AppState, Dimensions, Image, InteractionManager, Linking, Pressable, ScrollView, Share, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useBlockedUsers } from '../hooks/useBlockedUsers';
-import { auth, db } from '../src/firebaseConfig';
+import { auth, db, isFirebaseReady } from '../src/firebaseConfig';
 import ConfettiEffect from './components/ConfettiEffect';
 import FinisherCard from './components/FinisherCard';
 import RegistrationForm from './components/RegistrationForm';
@@ -21,6 +21,11 @@ cssInterop(LinearGradient, {
 });
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+/** When combined interested+registered headcount is below this, show "Trending" from 24h views. */
+const LOW_SOCIAL_HEADCOUNT = 6;
+/** Minimum unique viewers in the rolling window to show the trending badge. */
+const TRENDING_MIN_VIEWS = 8;
 
 interface OtherRunner {
   userId: string;
@@ -53,6 +58,10 @@ export default function RaceDetailsScreen() {
   const [avgRating, setAvgRating] = useState(0);
   const [reviewCount, setReviewCount] = useState(0);
   const { allBlockedIds } = useBlockedUsers();
+  const [friendIds, setFriendIds] = useState<Set<string>>(new Set());
+  const [views24hCount, setViews24hCount] = useState(0);
+  const [socialHeadcount, setSocialHeadcount] = useState(0);
+  const pendingExternalReturnRef = useRef(false);
 
   // Keep a ref to the latest Firestore data so button handlers always read fresh data
   const raceDataRef = useRef<any>(null);
@@ -67,6 +76,71 @@ export default function RaceDetailsScreen() {
 
   // Get the raceId from route parameters
   const raceId = Array.isArray(trail.id) ? trail.id[0] : trail.id;
+
+  // Friends list (root `users/{uid}.friends`) — used to prioritize avatars in "Who's Going"
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      setFriendIds(new Set());
+      return;
+    }
+    getDoc(doc(db, 'users', uid))
+      .then((snap) => {
+        if (!snap.exists()) {
+          setFriendIds(new Set());
+          return;
+        }
+        const raw = snap.data()?.friends;
+        if (Array.isArray(raw)) {
+          setFriendIds(
+            new Set(
+              raw.filter((x): x is string => typeof x === 'string' && x.length > 0)
+            )
+          );
+        } else {
+          setFriendIds(new Set());
+        }
+      })
+      .catch(() => setFriendIds(new Set()));
+  }, [auth.currentUser?.uid]);
+
+  // Record this user as a viewer + subscribe to rolling 24h viewer count (for Trending badge)
+  useEffect(() => {
+    if (!raceId) return;
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      setViews24hCount(0);
+      return;
+    }
+
+    const viewerRef = doc(db, 'trail_social', raceId, 'viewers', uid);
+    setDoc(
+      viewerRef,
+      { trailId: raceId, viewedAt: serverTimestamp() },
+      { merge: true }
+    ).catch(() => {});
+
+    let unsub: (() => void) | undefined;
+    const attach = () => {
+      unsub?.();
+      const dayAgo = Timestamp.fromMillis(Date.now() - 24 * 60 * 60 * 1000);
+      const q = query(
+        collection(db, 'trail_social', raceId, 'viewers'),
+        where('viewedAt', '>=', dayAgo)
+      );
+      unsub = onSnapshot(
+        q,
+        (snap) => setViews24hCount(snap.size),
+        () => setViews24hCount(0)
+      );
+    };
+    attach();
+    const interval = setInterval(attach, 15 * 60 * 1000);
+    return () => {
+      clearInterval(interval);
+      unsub?.();
+    };
+  }, [raceId]);
 
   // Check if race is completed — deferred until navigation transition finishes
   useEffect(() => {
@@ -237,7 +311,7 @@ export default function RaceDetailsScreen() {
 
   // Fetch other runners: both interested (matches) and registered (registrations)
   useEffect(() => {
-    if (!raceId) return;
+    if (!raceId || !isFirebaseReady) return;
 
     const currentUid = auth.currentUser?.uid;
     if (!currentUid) {
@@ -291,7 +365,9 @@ export default function RaceDetailsScreen() {
       if (!initialMatchesLoaded || !initialRegistrationsLoaded) return;
 
       // Build a set of registered userIds so we can exclude them from "interested"
-      const registeredUserIds = new Set(registrationsData.map(r => r.userId));
+      const registeredUserIds = new Set(
+        registrationsData.map((r) => r.userId).filter((id): id is string => typeof id === "string" && id.length > 0)
+      );
 
       const runnerPromises: Promise<OtherRunner | null>[] = [];
 
@@ -321,33 +397,57 @@ export default function RaceDetailsScreen() {
         seen.add(r.userId);
         return true;
       });
+      // Buddies / friends first, then registered over interested
+      unique.sort((a, b) => {
+        const sa =
+          (friendIds.has(a.userId) ? 1000 : 0) + (a.isRegistered ? 100 : 0);
+        const sb =
+          (friendIds.has(b.userId) ? 1000 : 0) + (b.isRegistered ? 100 : 0);
+        return sb - sa;
+      });
+      setSocialHeadcount(matchesData.length + registrationsData.length);
       setOtherRunners(unique);
     };
 
-    const unsubMatches = onSnapshot(matchesQuery, (snapshot) => {
-      matchesData = snapshot.docs.map(d => ({ userId: d.data().userId }));
-      initialMatchesLoaded = true;
-      mergeAndFetch();
-    }, (error) => {
-      console.error('Error listening to matches:', error);
-    });
+    const unsubMatches = onSnapshot(
+      matchesQuery,
+      (snapshot) => {
+        matchesData = snapshot.docs
+          .map((d) => {
+            const userId = d.data()?.userId;
+            return typeof userId === "string" && userId.length > 0 ? { userId } : null;
+          })
+          .filter((x): x is { userId: string } => x != null);
+        initialMatchesLoaded = true;
+        void mergeAndFetch().catch((e) => console.warn("[race-details] mergeAndFetch (matches):", e));
+      },
+      (error) => {
+        console.error("Error listening to matches:", error?.code ?? error);
+      }
+    );
 
-    const unsubRegistrations = onSnapshot(registrationsQuery, (snapshot) => {
-      registrationsData = snapshot.docs.map(d => {
-        const data = d.data();
-        return { userId: data.userId, distance: data.distance || undefined };
-      });
-      initialRegistrationsLoaded = true;
-      mergeAndFetch();
-    }, (error) => {
-      console.error('Error listening to registrations:', error);
-    });
+    const unsubRegistrations = onSnapshot(
+      registrationsQuery,
+      (snapshot) => {
+        registrationsData = snapshot.docs.flatMap((d) => {
+          const data = d.data() ?? {};
+          const userId = data.userId;
+          if (typeof userId !== "string" || userId.length === 0) return [];
+          return [{ userId, distance: data.distance || undefined }];
+        });
+        initialRegistrationsLoaded = true;
+        void mergeAndFetch().catch((e) => console.warn("[race-details] mergeAndFetch (registrations):", e));
+      },
+      (error) => {
+        console.error("Error listening to registrations:", error?.code ?? error);
+      }
+    );
 
     return () => {
       unsubMatches();
       unsubRegistrations();
     };
-  }, [raceId, allBlockedIds]);
+  }, [raceId, allBlockedIds, friendIds, isFirebaseReady]);
 
   const handleSaveRace = async () => {
     const uid = auth.currentUser?.uid;
@@ -561,6 +661,34 @@ export default function RaceDetailsScreen() {
   const elevationProfiles = getParam(raceData_merged?.elevationProfiles, '');
   const website = getParam(raceData_merged?.website, '');
 
+  const getExternalSourceName = (fresh: Record<string, unknown> | null | undefined) => {
+    const f = fresh || {};
+    const src = String(f.source || '');
+    if (src === 'runsignup' || f.runsignupUrl || f.runsignupRaceId) return 'RunSignup';
+    if (src === 'ultrasignup' || f.ultrasignupUrl || f.ultrasignupEventId) return 'UltraSignup';
+    const w = f.website;
+    if (typeof w === 'string' && w.length > 0) {
+      try {
+        const url = w.startsWith('http') ? w : `https://${w}`;
+        const host = new URL(url).hostname.replace(/^www\./, '');
+        const brand = host.split('.')[0];
+        if (brand) return brand.charAt(0).toUpperCase() + brand.slice(1);
+      } catch {
+        /* ignore */
+      }
+    }
+    return 'the registration site';
+  };
+
+  const getExternalRegisterLabel = (fresh: Record<string, unknown> | null | undefined) => {
+    const name = getExternalSourceName(fresh);
+    if (name === 'the registration site') return 'Register on external site →';
+    return `Register on ${name} →`;
+  };
+
+  const showTrendingBadge =
+    socialHeadcount < LOW_SOCIAL_HEADCOUNT && views24hCount >= TRENDING_MIN_VIEWS;
+
   // If race is completed, show Finisher Summary view
   if (isCompleted) {
     const isPendingVerification = !completedRaceData?.finishTime && !completedRaceData?.rank;
@@ -738,6 +866,14 @@ export default function RaceDetailsScreen() {
           {/* Quick Overview */}
           <View className="bg-[#2C3440] p-4 rounded-2xl mb-6">
             <Text className="text-white text-xl font-bold mb-3">Quick Overview</Text>
+
+            {showTrendingBadge && (
+              <View className="mb-3 rounded-xl border border-orange-500/40 bg-orange-500/15 px-3 py-2">
+                <Text className="text-sm font-semibold text-orange-200">
+                  🔥 {views24hCount} people viewed this race in the last 24 hours
+                </Text>
+              </View>
+            )}
 
             <View className="space-y-2">
               <View className="flex-row justify-between">
@@ -991,9 +1127,10 @@ export default function RaceDetailsScreen() {
 
             // Helper: render a horizontal avatar row
             const renderAvatarRow = (runners: OtherRunner[]) => (
-              <ScrollView horizontal={true} showsHorizontalScrollIndicator={false} className="flex-row">
-                {runners.map((runner) => {
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row pl-1">
+                {runners.map((runner, idx) => {
                   const photoUrl = runner.avatarUrl || runner.photoURL;
+                  const isBuddy = friendIds.has(runner.userId);
                   return (
                     <Pressable
                       key={runner.userId}
@@ -1001,17 +1138,32 @@ export default function RaceDetailsScreen() {
                         setSelectedUserId(runner.userId);
                         userProfileRef.current?.present();
                       }}
-                      className="mr-3 items-center"
+                      style={{ marginLeft: idx === 0 ? 0 : -12 }}
+                      className="items-center"
                     >
                       {photoUrl ? (
                         <Image
                           source={{ uri: photoUrl }}
-                          className="w-12 h-12 rounded-full bg-gray-700"
+                          style={{
+                            width: 52,
+                            height: 52,
+                            borderWidth: 2,
+                            borderColor: isBuddy ? '#34D399' : '#1A1F25',
+                          }}
+                          className="rounded-full bg-gray-700"
                           resizeMode="cover"
                         />
                       ) : (
-                        <View className="w-12 h-12 rounded-full bg-gray-700 items-center justify-center">
-                          <Text className="text-white text-lg font-bold">
+                        <View
+                          style={{
+                            width: 52,
+                            height: 52,
+                            borderWidth: 2,
+                            borderColor: isBuddy ? '#34D399' : '#1A1F25',
+                          }}
+                          className="rounded-full bg-gray-700 items-center justify-center"
+                        >
+                          <Text className="text-white text-xl font-bold">
                             {runner.name.charAt(0).toUpperCase()}
                           </Text>
                         </View>
@@ -1043,9 +1195,14 @@ export default function RaceDetailsScreen() {
 
               return (
                 <View className="mb-4">
-                  <Text className="text-white text-xl font-bold mb-4">
+                  <Text className="text-white text-xl font-bold mb-1">
                     Who's Going ({otherRunners.length})
                   </Text>
+                  {otherRunners.some((r) => friendIds.has(r.userId)) && (
+                    <Text className="text-emerald-400/90 text-xs mb-3">
+                      Friends on The Collective have a green ring
+                    </Text>
+                  )}
 
                   {sortedKeys.map(distLabel => {
                     const group = distanceGroups.get(distLabel) || [];
@@ -1074,9 +1231,14 @@ export default function RaceDetailsScreen() {
             // Single distance: show registered vs interested
             return (
               <View className="mb-4">
-                <Text className="text-white text-xl font-bold mb-4">
+                <Text className="text-white text-xl font-bold mb-1">
                   Who's Going ({otherRunners.length})
                 </Text>
+                {otherRunners.some((r) => friendIds.has(r.userId)) && (
+                  <Text className="text-emerald-400/90 text-xs mb-3">
+                    Friends on The Collective have a green ring
+                  </Text>
+                )}
 
                 {registeredRunners.length > 0 && (
                   <View className="mb-4">
@@ -1230,6 +1392,10 @@ export default function RaceDetailsScreen() {
                     (freshData?.website && freshData.website.startsWith('http') ? freshData.website : '');
                 }
 
+                if (!sourceName) {
+                  sourceName = getExternalSourceName(freshData as Record<string, unknown>);
+                }
+
                 if (!externalUrl) {
                   Alert.alert('Error', 'Could not find the registration URL for this race.');
                   return;
@@ -1257,30 +1423,35 @@ export default function RaceDetailsScreen() {
                     for (const mDoc of matchesSnap.docs) {
                       await deleteDoc(mDoc.ref);
                     }
-                    Alert.alert('Congratulations', 'Congratulations on registering for the race. We wish you the best of luck and have a blast!');
+                    Alert.alert(
+                      "You're registered",
+                      "We've saved your registration in The Collective and removed your 'interested' match so you show up on the registered list."
+                    );
                   } catch (err) {
                     console.error('Error saving external registration:', err);
                     Alert.alert('Error', 'Could not save your registration. Please try again.');
                   }
                 };
 
-                // Listen for app returning to foreground after browser redirect
+                pendingExternalReturnRef.current = true;
                 const subscription = AppState.addEventListener('change', (nextAppState) => {
-                  if (nextAppState === 'active') {
-                    subscription.remove();
-                    Alert.alert(
-                      'Registration Complete?',
-                      `Did you complete your registration on ${sourceName}?`,
-                      [
-                        { text: 'Not Yet', style: 'cancel' },
-                        { text: 'Yes, I Registered!', onPress: saveExternalRegistration },
-                      ]
-                    );
-                  }
+                  if (nextAppState !== 'active' || !pendingExternalReturnRef.current) return;
+                  pendingExternalReturnRef.current = false;
+                  subscription.remove();
+                  const label = sourceName || getExternalSourceName(freshData as Record<string, unknown>);
+                  Alert.alert(
+                    `Finished on ${label}?`,
+                    `If you completed registration on ${label}, confirm below so we can mark you registered in The Collective and show you with other runners going to this race.`,
+                    [
+                      { text: 'Not yet', style: 'cancel' },
+                      { text: "Yes, I'm registered", onPress: saveExternalRegistration },
+                    ]
+                  );
                 });
 
                 Linking.openURL(externalUrl).catch((err) => {
                   console.error(`Failed to open ${sourceName} URL:`, err);
+                  pendingExternalReturnRef.current = false;
                   subscription.remove();
                   Alert.alert('Error', `Could not open: ${externalUrl}`);
                 });
@@ -1318,11 +1489,16 @@ export default function RaceDetailsScreen() {
             activeOpacity={0.8}
           >
             <Text className="text-white text-lg font-bold">
-              {raceData_merged?.source === 'runsignup'
-                ? 'Register on RunSignup →'
-                : raceData_merged?.source === 'ultrasignup'
-                  ? 'Register on UltraSignup →'
-                  : 'Register Now'}
+              {(() => {
+                const fd = raceData_merged as Record<string, unknown> | undefined;
+                const src = String(fd?.source || '');
+                const external =
+                  src === 'runsignup' || src === 'ultrasignup' ||
+                  fd?.runsignupUrl || fd?.runsignupRaceId ||
+                  fd?.ultrasignupUrl || fd?.ultrasignupEventId;
+                if (external) return getExternalRegisterLabel(fd);
+                return 'Register Now';
+              })()}
             </Text>
           </TouchableOpacity>
         )}

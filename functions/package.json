@@ -2,6 +2,11 @@
   "name": "the-collective-functions",
   "private": true,
   "main": "index.js",
+  "scripts": {
+    "bootstrap-admin": "node scripts/setInitialAdmin.js",
+    "migrate-private-data": "node scripts/migratePrivateData.js",
+    "migrate-private-data:dry-run": "node scripts/migratePrivateData.js --dry-run"
+  },
   "engines": {
     "node": "20"
   },

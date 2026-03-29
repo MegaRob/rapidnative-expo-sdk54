@@ -1,10 +1,11 @@
+import "@/src/firebaseAuthEarly";
 import {
   DarkTheme,
   DefaultTheme,
   ThemeProvider,
 } from "@react-navigation/native";
 import * as Linking from "expo-linking";
-import { Stack, useRouter, useSegments } from "expo-router";
+import { Stack, useNavigationContainerRef, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import "react-native-reanimated";
@@ -20,28 +21,32 @@ const AppDarkTheme = {
   },
 };
 
-// Keep the native splash visible until we explicitly dismiss it
-SplashScreen.preventAutoHideAsync().catch(() => {
-  // Already hidden or not available — safe to ignore
-});
+// Keep the native splash visible until we explicitly dismiss it (see dismissNativeSplash below).
+SplashScreen.preventAutoHideAsync().catch(() => {});
 // import { enableScreens } from "react-native-screens";  // ← DISABLED: may conflict with Expo Router
 import { GluestackUIProvider } from "@/components/ui/gluestack-ui-provider";
 import "@/global.css";
 import { useColorScheme } from "@/hooks/use-color-scheme";
-import { auth, db } from "@/src/firebaseConfig";
+import {
+  auth,
+  db,
+  isFirebaseConfigured,
+  isFirebaseReady,
+  onAuthStateChanged,
+} from "@/src/firebaseConfig";
 import {
   registerForPushNotificationsAsync,
   savePushTokenToFirestore,
 } from "@/utils/pushNotifications";
 import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import Constants from "expo-constants";
-import { onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
   ScrollView,
+  StyleSheet,
   Text,
   TouchableOpacity,
   View,
@@ -63,6 +68,24 @@ if (!isExpoGo) {
   }
 }
 
+/** Wraps children with Stripe only when `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` is set — never secret keys. */
+function StripeRootProvider({ children }: { children: React.ReactNode }) {
+  const pk = process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY?.trim() ?? "";
+  if (!pk) {
+    if (__DEV__) {
+      console.warn(
+        "[Stripe] EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY is unset — payments disabled. Add it to root `.env` (publishable key only)."
+      );
+    }
+    return <>{children}</>;
+  }
+  return (
+    <StripeProvider publishableKey={pk} merchantIdentifier="merchant.com.beartoe.trailmatch">
+      {children}
+    </StripeProvider>
+  );
+}
+
 // expo-notifications remote push was removed from Expo Go in SDK 53.
 // Lazy-require so the app still runs in Expo Go (notifications just become no-ops).
 let Notifications: typeof import("expo-notifications") | null = null;
@@ -78,59 +101,73 @@ export const unstable_settings = {
   initialRouteName: "(tabs)",
 };
 
-export default function RootLayout() {
-  // ── Absolute first action: force-dismiss the native splash so Android never deadlocks ──
-  SplashScreen.hideAsync().catch(() => {});
+type PendingAuthNav = "login" | "onboarding" | "home" | null;
 
+export default function RootLayout() {
   const colorScheme = useColorScheme();
   const router = useRouter();
   const segments = useSegments();
+  const navigationRef = useNavigationContainerRef();
+  /** Root `NavigationContainer` is mounted and safe for `router.replace` / `router.navigate`. */
+  const [isNavReady, setIsNavReady] = useState(false);
+  /** True after first `onAuthStateChanged` emit (Firebase) or stub path (no config). */
   const [authChecked, setAuthChecked] = useState(false);
+  const [pendingNav, setPendingNav] = useState<PendingAuthNav>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [showBetaModal, setShowBetaModal] = useState(false);
   const [betaChecked, setBetaChecked] = useState(false);
   const [betaSaving, setBetaSaving] = useState(false);
-  const [splashMinElapsed, setSplashMinElapsed] = useState(false);
   const notificationListener = useRef<{ remove: () => void } | undefined>(undefined);
   const responseListener = useRef<{ remove: () => void } | undefined>(undefined);
+  const isNavReadyRef = useRef(false);
+  /** Only one hide; iOS / dev-client throws if hide runs with no VC or twice. */
+  const splashDismissedRef = useRef(false);
   const APP_ID = "1:1048323489461:web:e3c514fcf0d7748ef848fc";
 
-  // Splash minimum duration
-  useEffect(() => {
-    const timer = setTimeout(() => setSplashMinElapsed(true), 500);
-    return () => clearTimeout(timer);
+  const dismissNativeSplash = useCallback(() => {
+    if (splashDismissedRef.current) return;
+    splashDismissedRef.current = true;
+    void (async () => {
+      try {
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        await SplashScreen.hideAsync();
+      } catch {
+        // iOS: "No native splash screen registered…"; Expo Go / reload / background resume
+      }
+    })();
   }, []);
 
-  // Nuclear fallback — force gate open after 2s no matter what
+  // Track `navigationRef.isReady()` — required before any imperative navigation.
   useEffect(() => {
-    const fallback = setTimeout(() => {
-      console.warn('[RootLayout] 2s nuclear fallback — forcing gate open');
-      setAuthChecked(true);
-      setSplashMinElapsed(true);
-    }, 2000);
-    return () => clearTimeout(fallback);
-  }, []);
+    const sync = () => {
+      const ready = navigationRef.isReady();
+      isNavReadyRef.current = ready;
+      setIsNavReady(ready);
+    };
+    sync();
+    const raf = requestAnimationFrame(sync);
+    const unsub = navigationRef.addListener("state", sync);
+    return () => {
+      cancelAnimationFrame(raf);
+      unsub();
+    };
+  }, [navigationRef]);
 
-  const appReady = authChecked && splashMinElapsed;
+  const showBootstrapOverlay = !authChecked || !isNavReady;
+  /** Auth + navigation container ready — safe for deferred redirects only. */
+  const canNavigate = authChecked && isNavReady;
 
-  // ── Dismiss the native splash screen the INSTANT auth resolves (or user is null).
-  //    Do NOT wait for appReady or any downstream data — splash must vanish immediately
-  //    so Android doesn't deadlock after the location-permission dialog returns.
+  // Hide native splash once auth + nav are ready, or after a safety timeout (single dismiss).
   useEffect(() => {
-    if (authChecked) {
-      SplashScreen.hideAsync().catch(() => {
-        // Already hidden — safe to ignore
-      });
+    if (authChecked && isNavReady) {
+      dismissNativeSplash();
     }
-  }, [authChecked]);
+  }, [authChecked, isNavReady, dismissNativeSplash]);
 
-  // ── Safety timeout: force-dismiss native splash after 3s no matter what ──
   useEffect(() => {
-    const safetyTimer = setTimeout(() => {
-      SplashScreen.hideAsync().catch(() => {});
-    }, 3000);
+    const safetyTimer = setTimeout(() => dismissNativeSplash(), 3000);
     return () => clearTimeout(safetyTimer);
-  }, []);
+  }, [dismissNativeSplash]);
 
   // Refs for stable auth listener
   const routerRef = useRef(router);
@@ -138,53 +175,106 @@ export default function RootLayout() {
   const segmentsRef = useRef(segments);
   segmentsRef.current = segments;
 
-  // Auth listener
+  // No Firebase or init failed: resolve "logged out" without calling Auth APIs (stubs are not real Auth).
   useEffect(() => {
+    if (!isFirebaseConfigured || !isFirebaseReady) {
+      setCurrentUserId(null);
+      setAuthChecked(true);
+    }
+  }, []);
+
+  // Firebase Auth — wait for initial auth state before enqueueing redirects.
+  useEffect(() => {
+    if (!isFirebaseConfigured || !isFirebaseReady) return;
+
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       try {
         console.log('[RootLayout] onAuthStateChanged fired', { uid: user?.uid ?? null });
         setCurrentUserId(user?.uid ?? null);
         setAuthChecked(true);
 
-        const seg = segmentsRef.current;
-        const nav = routerRef.current;
-
         if (!user) {
-          // ── No user session — always redirect to login.
-          //    Guard against redirecting if already on login/signup/registration screens.
-          const onAuthScreen = seg[0] === "login" || seg[0] === "signup" || seg[0] === "registration-confirmation";
-          if (!onAuthScreen) {
-            nav.replace("/login");
-          }
+          setPendingNav("login");
           return;
         }
 
-        // ── Authenticated user — check onboarding, then send to home if on login
         (async () => {
           try {
             const userDoc = await getDoc(doc(db, "users", user.uid));
             const needsOnboarding =
               userDoc.exists() && userDoc.data()?.onboardingComplete === false;
             if (needsOnboarding) {
-              routerRef.current.replace("/onboarding");
-            } else if (seg[0] === "login" || seg[0] === "signup") {
-              routerRef.current.replace("/");
+              setPendingNav("onboarding");
+              return;
+            }
+            const seg = segmentsRef.current;
+            if (seg[0] === "login" || seg[0] === "signup") {
+              setPendingNav("home");
+            } else {
+              setPendingNav(null);
             }
           } catch (e) {
             console.warn('[RootLayout] Onboarding check failed:', e);
+            const seg = segmentsRef.current;
             if (seg[0] === "login" || seg[0] === "signup") {
-              routerRef.current.replace("/");
+              setPendingNav("home");
+            } else {
+              setPendingNav(null);
             }
           }
         })();
       } catch (e) {
         console.error('[RootLayout] Auth listener crashed:', e);
         setAuthChecked(true);
+        setPendingNav("login");
       }
     });
     return () => unsubscribe();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Deferred navigation — only after `onAuthStateChanged` has run and `navigationRef.isReady()`.
+  useEffect(() => {
+    if (!canNavigate || !authChecked) return;
+    if (!navigationRef.isReady()) return;
+
+    const onAuthScreen =
+      segments[0] === "login" ||
+      segments[0] === "signup" ||
+      segments[0] === "registration-confirmation";
+
+    if (!isFirebaseConfigured || !isFirebaseReady) {
+      if (!onAuthScreen) {
+        router.replace("/login");
+      }
+      return;
+    }
+
+    if (pendingNav === null) return;
+
+    const action = pendingNav;
+    setPendingNav(null);
+
+    if (action === "login") {
+      if (!onAuthScreen) router.replace("/login");
+      return;
+    }
+    if (action === "onboarding") {
+      router.replace("/onboarding");
+      return;
+    }
+    if (action === "home" && (segments[0] === "login" || segments[0] === "signup")) {
+      router.replace("/");
+    }
+  }, [
+    canNavigate,
+    authChecked,
+    isFirebaseConfigured,
+    isFirebaseReady,
+    pendingNav,
+    segments,
+    router,
+    navigationRef,
+  ]);
 
   // Push notifications
   useEffect(() => {
@@ -197,6 +287,7 @@ export default function RootLayout() {
     if (Notifications) {
       responseListener.current = Notifications.addNotificationResponseReceivedListener(
         (response) => {
+          if (!isNavReadyRef.current || !navigationRef.isReady()) return;
           const data = response.notification.request.content.data;
           const notifType = data?.type as string;
           if (notifType === "chat_message" || notifType === "chat_invite") {
@@ -220,12 +311,13 @@ export default function RootLayout() {
       notificationListener.current?.remove();
       responseListener.current?.remove();
     };
-  }, [currentUserId, router]);
+  }, [currentUserId, router, navigationRef]);
 
   // Deep links
   useEffect(() => {
     if (!currentUserId) return;
     const handleDeepLink = (url: string) => {
+      if (!isNavReadyRef.current || !navigationRef.isReady()) return;
       try {
         const parsed = new URL(url);
         const pathParts = parsed.pathname.split("/").filter(Boolean);
@@ -239,7 +331,7 @@ export default function RootLayout() {
     const sub = Linking.addEventListener("url", ({ url }) => handleDeepLink(url));
     Linking.getInitialURL().then((url) => { if (url) handleDeepLink(url); });
     return () => sub.remove();
-  }, [currentUserId, router]);
+  }, [currentUserId, router, navigationRef]);
 
   // Beta modal
   useEffect(() => {
@@ -248,6 +340,7 @@ export default function RootLayout() {
       setBetaChecked(false);
       return;
     }
+    if (!isFirebaseConfigured || !isFirebaseReady) return;
     const userRef = doc(db, "artifacts", APP_ID, "users", currentUserId);
     const unsubscribe = onSnapshot(userRef, (snap) => {
       const agreed = snap.data()?.betaAgreed === true;
@@ -255,10 +348,10 @@ export default function RootLayout() {
       if (agreed) setBetaChecked(false);
     });
     return () => unsubscribe();
-  }, [APP_ID, currentUserId]);
+  }, [APP_ID, currentUserId, isFirebaseConfigured, isFirebaseReady]);
 
   const handleBetaAgree = async () => {
-    if (!currentUserId || betaSaving) return;
+    if (!currentUserId || betaSaving || !isFirebaseConfigured || !isFirebaseReady) return;
     setBetaSaving(true);
     try {
       const userRef = doc(db, "artifacts", APP_ID, "users", currentUserId);
@@ -268,54 +361,58 @@ export default function RootLayout() {
     }
   };
 
-  const STRIPE_PUBLISHABLE_KEY = "pk_test_51T6yYLPSSNYdXAll0E6iEsq9OI01LzgHHS77wQn8g7yr5naj7IwU1jxz3YRuHhMqhR2YFzWsoc1mDqW6ntaVxlBD00V0tvJ2op";
-
   return (
     <GestureHandlerRootView style={{ flex: 1, height: '100%', width: '100%', backgroundColor: '#1A1F25' }}>
     <SafeAreaProvider style={{ flex: 1, backgroundColor: '#1A1F25' }}>
     <View style={{ flex: 1 }}>
     <BottomSheetModalProvider>
-    <StripeProvider
-      publishableKey={STRIPE_PUBLISHABLE_KEY}
-      merchantIdentifier="merchant.com.beartoe.trailmatch"
-    >
+    <StripeRootProvider>
     <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
     <GluestackUIProvider mode="dark">
       <ThemeProvider value={colorScheme === "dark" ? AppDarkTheme : DefaultTheme}>
-        {!appReady ? (
-          <View style={{ flex: 1, backgroundColor: '#1A1F25', justifyContent: 'center', alignItems: 'center' }}>
-            <ActivityIndicator size="large" color="#8BC34A" />
-          </View>
-        ) : (
-          <>
-            <View style={{ flex: 1, height: '100%', width: '100%' }}>
-            <Stack
-              screenOptions={{
-                headerShown: false,
-                animation: 'fade_from_bottom',
-                animationDuration: 200,
-                contentStyle: { backgroundColor: '#1A1F25' },
+        <Fragment>
+        <View style={{ flex: 1, height: '100%', width: '100%' }}>
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              animation: 'fade_from_bottom',
+              animationDuration: 200,
+              contentStyle: { backgroundColor: '#1A1F25' },
+            }}
+          >
+            <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="login" />
+            <Stack.Screen name="onboarding" options={{ gestureEnabled: false }} />
+            <Stack.Screen name="signup" />
+            <Stack.Screen name="registration-confirmation" />
+            <Stack.Screen name="search" options={{ animation: 'fade' }} />
+            <Stack.Screen
+              name="modal"
+              options={{ presentation: "modal", headerShown: true, title: "Modal" }}
+            />
+          </Stack>
+          {showBootstrapOverlay ? (
+            <View
+              pointerEvents="auto"
+              style={{
+                ...StyleSheet.absoluteFillObject,
+                backgroundColor: '#1A1F25',
+                justifyContent: 'center',
+                alignItems: 'center',
+                zIndex: 999,
               }}
             >
-              <Stack.Screen name="(tabs)" />
-              <Stack.Screen name="login" />
-              <Stack.Screen name="onboarding" options={{ gestureEnabled: false }} />
-              <Stack.Screen name="signup" />
-              <Stack.Screen name="registration-confirmation" />
-              <Stack.Screen name="search" options={{ animation: 'fade' }} />
-              <Stack.Screen
-                name="modal"
-                options={{ presentation: "modal", headerShown: true, title: "Modal" }}
-              />
-            </Stack>
+              <ActivityIndicator size="large" color="#8BC34A" />
             </View>
-            <StatusBar style="light" backgroundColor="#1A1F25" />
-            <Modal
-              transparent
-              animationType="fade"
-              visible={appReady && !!currentUserId && showBetaModal}
-              onRequestClose={() => {}}
-            >
+          ) : null}
+        </View>
+        <StatusBar style="light" backgroundColor="#1A1F25" />
+        <Modal
+          transparent
+          animationType="fade"
+          visible={!showBootstrapOverlay && !!currentUserId && showBetaModal}
+          onRequestClose={() => {}}
+        >
               <View
                 className="flex-1 bg-slate-950/90 items-center justify-center px-5"
                 style={{ backdropFilter: "blur(20px)" }}
@@ -399,12 +496,11 @@ export default function RootLayout() {
                 </View>
               </View>
             </Modal>
-          </>
-        )}
+        </Fragment>
       </ThemeProvider>
     </GluestackUIProvider>
     </KeyboardProvider>
-    </StripeProvider>
+    </StripeRootProvider>
     </BottomSheetModalProvider>
     </View>
     </SafeAreaProvider>

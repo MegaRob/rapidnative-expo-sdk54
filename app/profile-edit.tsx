@@ -1,5 +1,4 @@
 import { useNavigation, useRouter } from 'expo-router';
-import { updateProfile } from 'firebase/auth';
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import * as ImagePicker from 'expo-image-picker';
@@ -8,8 +7,11 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import KeyboardScreen from './components/KeyboardScreen';
-import { auth, db, storage } from '../src/firebaseConfig';
+import { auth, db, storage, updateProfile } from '../src/firebaseConfig';
+import { useCurrentUserProfile } from '../hooks/useCurrentUserProfile';
+import type { MergedUserProfile } from '../types/user';
 import { getCoordinatesForCity } from '../utils/geolocationUtils';
+import { syncUserPublicDisplay } from '../utils/userProfile';
 
 export default function ProfileEditScreen() {
   const [firstName, setFirstName] = useState('');
@@ -27,6 +29,7 @@ export default function ProfileEditScreen() {
   const [profileImageUrl, setProfileImageUrl] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
   const user = auth.currentUser;
+  const { profile: mergedProfile, loading: profileLoading } = useCurrentUserProfile();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const navigation = useNavigation();
@@ -39,48 +42,45 @@ export default function ProfileEditScreen() {
   }, [navigation]);
 
   useEffect(() => {
-    const fetchUserData = async () => {
-      if (user) {
-        try {
-          const userDocRef = doc(db, "users", user.uid);
-          const userDoc = await getDoc(userDocRef);
-          if (userDoc.exists()) {
-            const data = userDoc.data();
-            const resolvedFirstName =
-              data.firstName ||
-              (data.name ? String(data.name).split(' ')[0] : '') ||
-              '';
-            const resolvedLastName =
-              data.lastName ||
-              (data.name ? String(data.name).split(' ').slice(1).join(' ') : '') ||
-              '';
-            setFirstName(resolvedFirstName);
-            setLastName(resolvedLastName);
-            setUsername(data.username || '');
-            setHometown(data.hometown || data.locationName || data.location || '');
-            setBio(data.bio || '');
-            setPrimaryDistance(data.primaryDistance || '');
-            setPreferredTerrain(data.preferredTerrain || '');
-            setPaceRange(data.paceRange || '');
-            setLookingFor(Array.isArray(data.lookingFor) ? data.lookingFor : []);
-            setOpenDMs(data.openDMs !== false);
-            // Set profile image from user's photoURL or avatarUrl
-            setProfileImageUrl(data.avatarUrl || data.photoURL || user.photoURL || null);
-          } else {
-            // No user document found
-          }
-        } catch (error) {
-          console.error("Error fetching user data: ", error);
-        } finally {
-          setLoading(false);
-        }
-      } else {
-        setLoading(false);
-      }
-    };
-
-    fetchUserData();
-  }, [user]); // Re-run if the user changes
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+    if (profileLoading) {
+      setLoading(true);
+      return;
+    }
+    const data = mergedProfile as MergedUserProfile | null;
+    if (!data) {
+      setLoading(false);
+      return;
+    }
+    try {
+      const resolvedFirstName =
+        data.firstName ||
+        (data.name ? String(data.name).split(' ')[0] : '') ||
+        '';
+      const resolvedLastName =
+        data.lastName ||
+        (data.name ? String(data.name).split(' ').slice(1).join(' ') : '') ||
+        '';
+      setFirstName(resolvedFirstName);
+      setLastName(resolvedLastName);
+      setUsername(data.username || '');
+      setHometown(data.hometown || data.locationName || data.location || '');
+      setBio(data.bio || '');
+      setPrimaryDistance(data.primaryDistance || '');
+      setPreferredTerrain(data.preferredTerrain || '');
+      setPaceRange(data.paceRange || '');
+      setLookingFor(Array.isArray(data.lookingFor) ? data.lookingFor : []);
+      setOpenDMs(data.openDMs !== false);
+      setProfileImageUrl(data.avatarUrl || data.photoURL || user.photoURL || null);
+    } catch (error) {
+      console.error("Error applying user data: ", error);
+    } finally {
+      setLoading(false);
+    }
+  }, [user, mergedProfile, profileLoading]);
 
   const handleSaveProfile = async () => {
     if (!user) return;
@@ -116,6 +116,10 @@ export default function ProfileEditScreen() {
         updateData.name = username;
       }
       await updateDoc(userDocRef, updateData);
+      const mergedSnap = await getDoc(userDocRef);
+      if (mergedSnap.exists()) {
+        await syncUserPublicDisplay(user.uid, mergedSnap.data() as Record<string, unknown>);
+      }
       Alert.alert("Profile Saved!");
       router.back(); // Go back to the profile screen
     } catch (error) {
@@ -154,6 +158,10 @@ export default function ProfileEditScreen() {
       // 2. Update the Firestore user document
       const userDocRef = doc(db, 'users', uid);
       await updateDoc(userDocRef, { photoURL: downloadURL, avatarUrl: downloadURL });
+      const afterPhoto = await getDoc(userDocRef);
+      if (afterPhoto.exists()) {
+        await syncUserPublicDisplay(uid, afterPhoto.data() as Record<string, unknown>);
+      }
 
       // Update the local state (e.g., setProfileImage(downloadURL))
       // so the new image appears instantly.

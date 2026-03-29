@@ -26,7 +26,8 @@ import {
   updateDoc,
   increment,
 } from "firebase/firestore";
-import { auth, db } from "../../src/firebaseConfig";
+import { auth, db, isFirebaseConfigured, isFirebaseReady } from "@/src/firebaseConfig";
+import { fetchMergedUserProfile } from "../../utils/userProfile";
 import StandardBottomSheet, {
   StandardBottomSheetHandle,
 } from "../components/StandardBottomSheet";
@@ -51,7 +52,11 @@ interface CommunityPost {
 }
 
 const APP_ID = "1:1048323489461:web:e3c514fcf0d7748ef848fc";
-const COMMUNITY_COLLECTION = collection(db, "artifacts", APP_ID, "public", "data", "community_posts");
+
+function getCommunityCollection() {
+  if (!isFirebaseConfigured || !isFirebaseReady) return null;
+  return collection(db, "artifacts", APP_ID, "public", "data", "community_posts");
+}
 
 const formatTimestamp = (value: any) => {
   if (!value) return "";
@@ -104,7 +109,13 @@ export default function RaceCommunityHub() {
       return;
     }
 
-    const postQuery = query(COMMUNITY_COLLECTION, where("trailId", "==", trailId));
+    const communityCol = getCommunityCollection();
+    if (!communityCol) {
+      setPosts([]);
+      return;
+    }
+
+    const postQuery = query(communityCol, where("trailId", "==", trailId));
     const unsubscribe = onSnapshot(postQuery, (snapshot) => {
       const list = snapshot.docs
         .map((docSnap) => {
@@ -138,11 +149,16 @@ export default function RaceCommunityHub() {
     const user = auth.currentUser;
     if (!user) return;
     const fetchProfile = async () => {
-      const profileSnap = await getDoc(doc(db, "users", user.uid));
-      if (profileSnap.exists()) {
-        const data = profileSnap.data();
-        setAuthorName(data.name || data.username || user.email || "Runner");
-      } else {
+      try {
+        const data = await fetchMergedUserProfile(user.uid);
+        setAuthorName(
+          (typeof data.name === "string" && data.name) ||
+            (typeof data.username === "string" && data.username) ||
+            (typeof data.email === "string" && data.email) ||
+            user.email ||
+            "Runner"
+        );
+      } catch {
         setAuthorName(user.email || "Runner");
       }
     };
@@ -157,6 +173,7 @@ export default function RaceCommunityHub() {
     }
 
     const fetchInterest = async () => {
+      if (!isFirebaseConfigured || !isFirebaseReady) return;
       const updates: Record<string, boolean> = {};
       await Promise.all(
         posts.map(async (post) => {
@@ -250,7 +267,13 @@ export default function RaceCommunityHub() {
       return;
     }
 
-    await addDoc(COMMUNITY_COLLECTION, {
+    const communityCol = getCommunityCollection();
+    if (!communityCol) {
+      Alert.alert("Configuration", "Firebase is not configured. Add EXPO_PUBLIC_FIREBASE_* to `.env`.");
+      return;
+    }
+
+    await addDoc(communityCol, {
       type: newPostCategory,
       intent: newPostIntent,
       authorId: user.uid,
@@ -280,6 +303,10 @@ export default function RaceCommunityHub() {
   const handleUpdatePost = async () => {
     const user = auth.currentUser;
     if (!user || !activePost) return;
+    if (!isFirebaseConfigured || !isFirebaseReady) {
+      Alert.alert("Configuration", "Firebase is not configured.");
+      return;
+    }
     if (!editContent.trim()) {
       Alert.alert("Missing details", "Please enter post details.");
       return;
@@ -312,6 +339,10 @@ export default function RaceCommunityHub() {
   const handleDeletePost = async () => {
     const user = auth.currentUser;
     if (!user || !activePost) return;
+    if (!isFirebaseConfigured || !isFirebaseReady) {
+      Alert.alert("Configuration", "Firebase is not configured.");
+      return;
+    }
     try {
       const postRef = doc(
         db,
@@ -335,6 +366,10 @@ export default function RaceCommunityHub() {
     const user = auth.currentUser;
     if (!user) {
       Alert.alert("Sign in required", "Please sign in to show interest.");
+      return;
+    }
+    if (!isFirebaseConfigured || !isFirebaseReady) {
+      Alert.alert("Configuration", "Firebase is not configured.");
       return;
     }
 

@@ -104,7 +104,13 @@
       "router": {},
       "eas": {
         "projectId": "c2835d8c-92ce-45a2-8630-71ade3a7689d"
-      }
+      },
+      "FIREBASE_API_KEY": "REPLACE_WITH_YOUR_KEY",
+      "FIREBASE_AUTH_DOMAIN": "trailmatch-49203553-49000.firebaseapp.com",
+      "FIREBASE_PROJECT_ID": "trailmatch-49203553-49000",
+      "FIREBASE_STORAGE_BUCKET": "trailmatch-49203553-49000.appspot.com",
+      "FIREBASE_MESSAGING_SENDER_ID": "REPLACE_WITH_YOUR_ID",
+      "FIREBASE_APP_ID": "REPLACE_WITH_YOUR_APP_ID"
     }
   }
 }

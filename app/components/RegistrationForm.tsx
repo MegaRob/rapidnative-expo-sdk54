@@ -43,6 +43,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import KeyboardScreen from './KeyboardScreen';
 import { auth, db, app } from '../../src/firebaseConfig';
+import { fetchMergedUserProfile } from '../../utils/userProfile';
 
 // App ID from firebaseConfig
 const APP_ID = '1:1048323489461:web:e3c514fcf0d7748ef848fc';
@@ -137,9 +138,8 @@ export default function RegistrationForm({
       const fetchProfileDefaults = async () => {
         if (!user) return;
         try {
-          const userDoc = await getDoc(doc(db, 'users', user.uid));
-          if (userDoc.exists()) {
-            const data = userDoc.data();
+          const data = await fetchMergedUserProfile(user.uid);
+          if (data && Object.keys(data).length > 0) {
             const resolvedFirstName =
               data.firstName ||
               (data.name ? String(data.name).split(' ')[0] : '') ||
@@ -156,14 +156,19 @@ export default function RegistrationForm({
               ...prev,
               firstName: prev.firstName || resolvedFirstName,
               lastName: prev.lastName || resolvedLastName,
+              email:
+                prev.email ||
+                (typeof data.email === 'string' ? data.email : '') ||
+                user.email ||
+                '',
               phone: saved?.phone ? formatPhone(saved.phone) : prev.phone,
               emergencyContactName: saved?.emergencyContactName || prev.emergencyContactName,
               emergencyContactPhone: saved?.emergencyContactPhone ? formatPhone(saved.emergencyContactPhone) : prev.emergencyContactPhone,
-              shirtSize: saved?.shirtSize || prev.shirtSize,
+              shirtSize: (saved?.shirtSize || prev.shirtSize) as FormData['shirtSize'],
             }));
 
             if (saved?.shirtSize) {
-              setSelectedShirtSize(saved.shirtSize);
+              setSelectedShirtSize(saved.shirtSize as ShirtSize);
             }
           }
         } catch (error) {

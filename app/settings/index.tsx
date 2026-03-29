@@ -1,11 +1,16 @@
 import { useNavigation, useRouter } from 'expo-router';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc } from 'firebase/firestore';
 import { ArrowLeft } from 'lucide-react-native';
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Switch, Text, TouchableOpacity, View } from 'react-native';
 import KeyboardScreen from '../components/KeyboardScreen';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { auth, db } from '../../src/firebaseConfig';
+import { auth, db, deleteUser, signOut } from '../../src/firebaseConfig';
+import {
+  deleteUserFirestoreData,
+  isRequiresRecentLoginError,
+} from '../../utils/deleteAccount';
+import { fetchMergedUserProfile } from '../../utils/userProfile';
 import LocationModal, { LocationModalHandle } from '../components/LocationModal';
 
 export default function SettingsScreen() {
@@ -14,6 +19,7 @@ export default function SettingsScreen() {
   const [isPrivate, setIsPrivate] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
   const [locationName, setLocationName] = useState<string>('');
   const [latitude, setLatitude] = useState<number | null>(null);
   const [longitude, setLongitude] = useState<number | null>(null);
@@ -36,15 +42,16 @@ export default function SettingsScreen() {
       }
 
       try {
-        const userDocRef = doc(db, 'users', user.uid);
-        const userDoc = await getDoc(userDocRef);
-        
-        if (userDoc.exists()) {
-          const data = userDoc.data();
+        const data = await fetchMergedUserProfile(user.uid);
+        if (data) {
           setIsPrivate(data.isPrivate === true);
           setLocationName(data.locationName || '');
-          setLatitude(data.latitude || null);
-          setLongitude(data.longitude || null);
+          setLatitude(
+            typeof data.latitude === 'number' ? data.latitude : null
+          );
+          setLongitude(
+            typeof data.longitude === 'number' ? data.longitude : null
+          );
         }
       } catch (error) {
         console.error('Error fetching settings:', error);
@@ -79,6 +86,68 @@ export default function SettingsScreen() {
       Alert.alert('Error', 'Failed to update privacy setting. Please try again.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDeleteAccount = () => {
+    if (!user || deletingAccount) return;
+
+    Alert.alert(
+      'Delete Account?',
+      'This action is permanent. It will immediately delete your profile, your chat history, and your authentication record from The Collective. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => void runDeleteAccount(),
+        },
+      ]
+    );
+  };
+
+  const runDeleteAccount = async () => {
+    const current = auth.currentUser;
+    if (!current) {
+      Alert.alert('Not signed in', 'Please sign in to delete your account.');
+      return;
+    }
+
+    setDeletingAccount(true);
+    try {
+      await deleteUserFirestoreData(current.uid);
+    } catch (e: unknown) {
+      console.error('deleteUserFirestoreData:', e);
+      Alert.alert(
+        'Deletion failed',
+        'Could not remove all of your data. Please try again or contact support.'
+      );
+      setDeletingAccount(false);
+      return;
+    }
+
+    try {
+      await deleteUser(current);
+      router.replace('/login');
+    } catch (e: unknown) {
+      if (isRequiresRecentLoginError(e)) {
+        try {
+          await signOut(auth);
+        } catch {
+          /* ignore */
+        }
+        Alert.alert(
+          'Sign in required',
+          'Your data was removed, but Firebase needs a recent sign-in to delete your login. Please sign in again, then tap Delete Account once more to finish removing your account.',
+          [{ text: 'OK', onPress: () => router.replace('/login') }]
+        );
+      } else {
+        const msg =
+          e instanceof Error ? e.message : 'Could not delete your login. Please try again.';
+        Alert.alert('Could not delete account', msg);
+      }
+    } finally {
+      setDeletingAccount(false);
     }
   };
 
@@ -194,6 +263,25 @@ export default function SettingsScreen() {
             <Text className="text-white text-base">Blocked Users</Text>
             <Text className="text-gray-400">›</Text>
           </TouchableOpacity>
+        </View>
+
+        {/* Delete account — Google Play / data policy */}
+        <View className="mt-6 mb-8">
+          <TouchableOpacity
+            onPress={handleDeleteAccount}
+            disabled={deletingAccount || !user}
+            className="w-full py-4 rounded-lg items-center border border-red-600 bg-red-950/40"
+            activeOpacity={0.8}
+          >
+            {deletingAccount ? (
+              <ActivityIndicator color="#f87171" />
+            ) : (
+              <Text className="text-red-500 text-base font-semibold">Delete Account</Text>
+            )}
+          </TouchableOpacity>
+          <Text className="text-gray-500 text-xs mt-2 text-center">
+            Permanently remove your profile, chats, and sign-in.
+          </Text>
         </View>
       </KeyboardScreen>
 

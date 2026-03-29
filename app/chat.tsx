@@ -14,6 +14,7 @@ import {
   setDoc,
   startAfter,
   Timestamp,
+  updateDoc,
   writeBatch
 } from 'firebase/firestore';
 import { ArrowLeft, Check, MoreVertical, RefreshCw, Send as SendIcon, X } from 'lucide-react-native';
@@ -41,6 +42,7 @@ import type { InputToolbarProps } from 'react-native-gifted-chat/lib/InputToolba
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { auth, db } from '../src/firebaseConfig';
 import { blockUser, isUserBlocked } from '../utils/blockUtils';
+import { fetchPeerProfileForChat, userPublicDisplayRef } from '../utils/userProfile';
 import ReportModal, { ReportModalHandle } from './components/ReportModal';
 import UserProfileModal, { UserProfileModalHandle } from './components/UserProfileModal';
 
@@ -527,11 +529,8 @@ export default function ChatScreen() {
     const fetchBuddyAvatar = async () => {
       if (activeBuddyId) {
         try {
-          const buddyDoc = await getDoc(doc(db, 'users', activeBuddyId));
-          if (buddyDoc.exists()) {
-            const data = buddyDoc.data();
-            setBuddyAvatarUrl(data.avatarUrl || data.photoURL || null);
-          }
+          const peer = await fetchPeerProfileForChat(activeBuddyId);
+          setBuddyAvatarUrl(peer?.avatarUrl ?? null);
           
           // Check if user is blocked
           const blocked = await isUserBlocked(activeBuddyId);
@@ -553,9 +552,9 @@ export default function ChatScreen() {
       return;
     }
 
-    const buddyUserRef = doc(db, 'users', activeBuddyId);
+    const buddyDisplayRef = userPublicDisplayRef(activeBuddyId);
     const unsubscribe = onSnapshot(
-      buddyUserRef,
+      buddyDisplayRef,
       (snap) => {
         try {
           if (!snap.exists()) {
@@ -584,8 +583,13 @@ export default function ChatScreen() {
       if (!uid) return;
 
       const userRef = doc(db, 'users', uid);
+      const displayRef = userPublicDisplayRef(uid);
       const pulse = () => {
-        setDoc(userRef, { lastActive: Timestamp.now() }, { merge: true }).catch(() => {
+        const t = Timestamp.now();
+        Promise.all([
+          setDoc(userRef, { lastActive: t }, { merge: true }),
+          setDoc(displayRef, { lastActive: t }, { merge: true }),
+        ]).catch(() => {
           /* heartbeat is best-effort */
         });
       };
@@ -647,12 +651,11 @@ export default function ChatScreen() {
       if (uncachedUserIds.length > 0) {
         const profilePromises = uncachedUserIds.map(async (userId) => {
           try {
-            const userDoc = await getDoc(doc(db, 'users', userId));
-            if (userDoc.exists()) {
-              const userData = userDoc.data();
+            const peer = await fetchPeerProfileForChat(userId);
+            if (peer) {
               userProfileCache.current.set(userId, {
-                name: userData.username || userData.name || 'User',
-                avatarUrl: userData.avatarUrl || userData.photoURL || null,
+                name: peer.name,
+                avatarUrl: peer.avatarUrl,
               });
             }
           } catch (e) {
@@ -699,6 +702,8 @@ export default function ChatScreen() {
         limit(1) // Only listen to the latest message
       );
 
+      let isFirstListenerSnapshot = true;
+
       const unsubscribe = onSnapshot(q, 
         (snapshot) => {
           if (snapshot.empty) return;
@@ -706,6 +711,17 @@ export default function ChatScreen() {
           const latestDoc = snapshot.docs[0];
           const data = latestDoc.data();
           const userId = data.userId || data.user?._id || data.user;
+          const userIdStr = typeof userId === 'string' ? userId : String(userId);
+          const me = auth.currentUser?.uid;
+
+          // After the first snapshot, clear global unread only when a new latest message is from the
+          // other person (avoids clearing on open while another chat still has unread, and when you send).
+          if (!isFirstListenerSnapshot && me && userIdStr && userIdStr !== me) {
+            updateDoc(doc(db, 'users', me), { hasUnreadMessages: false }).catch(() => {
+              /* best-effort */
+            });
+          }
+          isFirstListenerSnapshot = false;
 
           const currentUserId = auth.currentUser?.uid || user?.uid;
           if (currentUserId) {
@@ -735,19 +751,19 @@ export default function ChatScreen() {
             // If not cached, fetch in background
             const userIdStr = typeof userId === 'string' ? userId : String(userId);
             if (!cachedProfile && userIdStr !== user?.uid) {
-              getDoc(doc(db, 'users', userIdStr)).then(userDoc => {
-                if (userDoc.exists()) {
-                  const userData = userDoc.data();
+              fetchPeerProfileForChat(userIdStr).then((peer) => {
+                if (peer) {
                   userProfileCache.current.set(userIdStr, {
-                    name: userData.username || userData.name || 'User',
-                    avatarUrl: userData.avatarUrl || userData.photoURL || null,
+                    name: peer.name,
+                    avatarUrl: peer.avatarUrl,
                   });
-                  // Update message with name
-                  setMessages(current => current.map(msg => 
-                    msg._id === latestDoc.id 
-                      ? { ...msg, user: { ...msg.user, name: userData.username || userData.name || 'User' } }
-                      : msg
-                  ));
+                  setMessages((current) =>
+                    current.map((msg) =>
+                      msg._id === latestDoc.id
+                        ? { ...msg, user: { ...msg.user, name: peer.name } }
+                        : msg
+                    )
+                  );
                 }
               }).catch(() => {
                 /* profile name stays empty until next update */
@@ -831,12 +847,11 @@ export default function ChatScreen() {
       if (uncachedUserIds.length > 0) {
         const profilePromises = uncachedUserIds.map(async (userId) => {
           try {
-            const userDoc = await getDoc(doc(db, 'users', userId));
-            if (userDoc.exists()) {
-              const userData = userDoc.data();
+            const peer = await fetchPeerProfileForChat(userId);
+            if (peer) {
               userProfileCache.current.set(userId, {
-                name: userData.username || userData.name || 'User',
-                avatarUrl: userData.avatarUrl || userData.photoURL || null,
+                name: peer.name,
+                avatarUrl: peer.avatarUrl,
               });
             }
           } catch (e) {
