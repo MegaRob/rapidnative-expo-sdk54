@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1048323489461",
+    "project_id": "trailmatch-49203553-49000",
+    "storage_bucket": "trailmatch-49203553-49000.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1048323489461:android:REPLACE_WITH_ID_FROM_FIREBASE_CONSOLE",
+        "android_client_info": {
+          "package_name": "com.robertolsen.thecollective"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAcKYEhZyUgwUV58uWEVbI4Gwkn65miHt4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

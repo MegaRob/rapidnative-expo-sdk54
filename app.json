@@ -11,6 +11,7 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
+      "googleServicesFile": "./GoogleService-Info.plist",
       "bundleIdentifier": "com.beartoe.myapp",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
@@ -21,6 +22,7 @@
     },
     "android": {
       "newArchEnabled": true,
+      "googleServicesFile": "./google-services.json",
       "package": "com.robertolsen.thecollective",
       "versionCode": 1,
       "permissions": [
@@ -88,6 +90,16 @@
         {
           "merchantIdentifier": "merchant.com.beartoe.trailmatch",
           "enableGooglePay": true
+        }
+      ],
+      "@react-native-firebase/app",
+      "@react-native-firebase/app-check",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static"
+          }
         }
       ]
     ],
