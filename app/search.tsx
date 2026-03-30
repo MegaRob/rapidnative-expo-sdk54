@@ -18,7 +18,6 @@ import {
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  FlatList,
   Keyboard,
   Pressable,
   Text,
@@ -26,6 +25,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import KeyboardScreen from './components/KeyboardScreen';
 import { auth, db } from '../src/firebaseConfig';
@@ -439,7 +439,7 @@ export default function SearchScreen() {
           </View>
         ) : (
           /* Results list */
-          <FlatList
+          <FlashList
             data={results}
             renderItem={renderResult}
             keyExtractor={(item) => item.id}

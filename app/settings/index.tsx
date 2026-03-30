@@ -214,7 +214,7 @@ export default function SettingsScreen() {
                 Private Profile
               </Text>
               <Text className="text-gray-400 text-sm leading-5">
-                When enabled, your profile will be hidden from other runners. You can still like and register for races, but you will not appear in "Other Runners Going" lists or discovery feeds.
+                {`When enabled, your profile will be hidden from other runners. You can still like and register for races, but you will not appear in "Other Runners Going" lists or discovery feeds.`}
               </Text>
             </View>
             <Switch

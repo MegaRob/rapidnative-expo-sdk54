@@ -1,5 +1,6 @@
 import { useFocusEffect } from "@react-navigation/native";
 import { Image as ExpoImage } from "expo-image";
+import * as Haptics from "expo-haptics";
 import * as Location from 'expo-location';
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
@@ -338,9 +339,13 @@ export default function HomeScreen() {
       }
     };
 
-    void run();
+    const interaction = InteractionManager.runAfterInteractions(() => {
+      if (!cancelled) void run();
+    });
+
     return () => {
       cancelled = true;
+      interaction.cancel?.();
     };
   }, [allRaces, socialTotals]);
 
@@ -348,6 +353,8 @@ export default function HomeScreen() {
   const loadedRacesRef = useRef(filteredRaces);
   const currentIndexRef = useRef(currentIndex);
   const prefetchedImagesRef = useRef<Set<string>>(new Set());
+  /** Fire at most once per direction when pan crosses swipe threshold (reset in dead zone / on release). */
+  const swipeHapticCommittedRef = useRef<"left" | "right" | null>(null);
   const excludedIdsRef = useRef<Set<string>>(new Set());
   const loadingMoreRef = useRef(false);
 
@@ -378,6 +385,8 @@ export default function HomeScreen() {
     const batchStart =
       Math.floor(currentIndex / PREFETCH_BATCH_SIZE) * PREFETCH_BATCH_SIZE;
     prefetchRaceImages(filteredRaces, batchStart, PREFETCH_BATCH_SIZE);
+    // Always warm the next few cards ahead of the finger (batch window can lag at index boundaries).
+    prefetchRaceImages(filteredRaces, currentIndex, 6);
   }, [filteredRaces, currentIndex, prefetchRaceImages]);
 
   const formatDate = useCallback((value: any): string => {
@@ -997,6 +1006,20 @@ export default function HomeScreen() {
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onPanResponderMove: (_, gesture) => {
+        const { dx } = gesture;
+        if (Math.abs(dx) < SWIPE_THRESHOLD * 0.35) {
+          swipeHapticCommittedRef.current = null;
+        } else if (dx > SWIPE_THRESHOLD) {
+          if (swipeHapticCommittedRef.current !== "right") {
+            swipeHapticCommittedRef.current = "right";
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+          }
+        } else if (dx < -SWIPE_THRESHOLD) {
+          if (swipeHapticCommittedRef.current !== "left") {
+            swipeHapticCommittedRef.current = "left";
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+          }
+        }
         // READ FROM REFS to avoid stale state
         const currentRace = loadedRacesRef.current[currentIndexRef.current];
         if (currentRace) {
@@ -1004,6 +1027,7 @@ export default function HomeScreen() {
         }
       },
       onPanResponderRelease: (_, gesture) => {
+        swipeHapticCommittedRef.current = null;
         const { dx, dy } = gesture;
         // READ FROM REFS to avoid stale state
         const currentRace = loadedRacesRef.current[currentIndexRef.current];
@@ -1372,6 +1396,7 @@ export default function HomeScreen() {
                         contentFit="cover"
                         blurRadius={40}
                         cachePolicy="memory-disk"
+                        priority="low"
                       />
                       <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15,23,42,0.45)' }} />
                       <View style={{ position: 'absolute', top: '12%', left: 0, right: 0, alignItems: 'center' }}>
@@ -1380,13 +1405,13 @@ export default function HomeScreen() {
                           borderRadius: 24,
                           padding: 12,
                         }}>
-                          <ExpoImage
-                            source={{ uri: nextRace.image }}
-                            style={{ width: SCREEN_WIDTH * 0.5, height: SCREEN_WIDTH * 0.5, borderRadius: 16 }}
-                            contentFit="contain"
-                            cachePolicy="memory-disk"
-                            priority="high"
-                          />
+                      <ExpoImage
+                        source={{ uri: nextRace.image }}
+                        style={{ width: SCREEN_WIDTH * 0.5, height: SCREEN_WIDTH * 0.5, borderRadius: 16 }}
+                        contentFit="contain"
+                        cachePolicy="memory-disk"
+                        priority="normal"
+                      />
                         </View>
                       </View>
                     </>
@@ -1396,7 +1421,7 @@ export default function HomeScreen() {
                       style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
                       contentFit="cover"
                       cachePolicy="memory-disk"
-                      priority="high"
+                      priority="normal"
                     />
                   )}
                 <LinearGradient
@@ -1834,6 +1859,7 @@ const EmptyScreen = React.memo(({
   </SafeAreaView>
   );
 });
+EmptyScreen.displayName = "EmptyScreen";
 
 const MainHeader = React.memo(({
   onSaved,
@@ -1895,3 +1921,4 @@ const MainHeader = React.memo(({
   </View>
   );
 });
+MainHeader.displayName = "MainHeader";

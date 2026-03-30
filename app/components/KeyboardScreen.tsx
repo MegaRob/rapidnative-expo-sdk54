@@ -49,8 +49,7 @@ export default function KeyboardScreen({
     <KeyboardAwareScrollView
       style={[{ flex: 1 }, style]}
       contentContainerStyle={[{ flexGrow: 1 }, contentContainerStyle]}
-      enableOnAndroid={true}
-      extraScrollHeight={30}
+      extraKeyboardSpace={30}
       keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}
       bottomOffset={40}

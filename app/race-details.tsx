@@ -1196,7 +1196,7 @@ export default function RaceDetailsScreen() {
               return (
                 <View className="mb-4">
                   <Text className="text-white text-xl font-bold mb-1">
-                    Who's Going ({otherRunners.length})
+                    {`Who's Going (${otherRunners.length})`}
                   </Text>
                   {otherRunners.some((r) => friendIds.has(r.userId)) && (
                     <Text className="text-emerald-400/90 text-xs mb-3">
@@ -1232,7 +1232,7 @@ export default function RaceDetailsScreen() {
             return (
               <View className="mb-4">
                 <Text className="text-white text-xl font-bold mb-1">
-                  Who's Going ({otherRunners.length})
+                  {`Who's Going (${otherRunners.length})`}
                 </Text>
                 {otherRunners.some((r) => friendIds.has(r.userId)) && (
                   <Text className="text-emerald-400/90 text-xs mb-3">

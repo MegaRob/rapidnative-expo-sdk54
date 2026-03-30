@@ -177,7 +177,7 @@ const LocationModal = forwardRef<LocationModalHandle, LocationModalProps>(
               Enter City Name
             </Text>
             <Text style={{ color: '#9CA3AF', fontSize: 14, marginBottom: 16 }}>
-              Enter a city and state (e.g., "Boulder, CO" or "Denver, CO")
+              Enter a city and state (e.g., Boulder, CO or Denver, CO)
             </Text>
 
             <BottomSheetTextInput

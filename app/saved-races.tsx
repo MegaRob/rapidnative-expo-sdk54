@@ -99,6 +99,7 @@ const SegmentedControl = React.memo(({
     </View>
   );
 });
+SegmentedControl.displayName = "SegmentedControl";
 
 // Liked Race Card Component - Memoized for performance
 const LikedRaceCard = React.memo(({ 
@@ -234,6 +235,7 @@ const LikedRaceCard = React.memo(({
     prevProps.race.isPinned === nextProps.race.isPinned
   );
 });
+LikedRaceCard.displayName = "LikedRaceCard";
 
 // Registered Race Card Component - Memoized for performance
 const RegisteredRaceCard = React.memo(({ 
@@ -382,6 +384,7 @@ const RegisteredRaceCard = React.memo(({
     </Pressable>
   );
 }, (prevProps, nextProps) => prevProps.race.id === nextProps.race.id);
+RegisteredRaceCard.displayName = "RegisteredRaceCard";
 
 // Completed Race Card Component - Memoized for performance
 const CompletedRaceCard = React.memo(({ 
@@ -486,6 +489,7 @@ const CompletedRaceCard = React.memo(({
     </Pressable>
   );
 }, (prevProps, nextProps) => prevProps.race.id === nextProps.race.id);
+CompletedRaceCard.displayName = "CompletedRaceCard";
 
 // Empty State Component
 const EmptyState = ({ 

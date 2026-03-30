@@ -146,7 +146,7 @@ export default function BlockedUsersScreen() {
         {blockedUsers.length === 0 ? (
           <View className="flex-1 items-center justify-center">
             <Text className="text-base text-gray-400 text-center">
-              You haven't blocked any users yet.
+              {`You haven't blocked any users yet.`}
             </Text>
           </View>
         ) : (

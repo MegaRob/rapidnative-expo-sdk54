@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import type { NativeSyntheticEvent, TextInputEndEditingEventData } from "react-native";
 import {
   ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
-  Platform,
 } from "react-native";
 import {
   collection,
@@ -488,8 +488,12 @@ export default function DirectorDashboard() {
                     </View>
                     <TextInput
                       defaultValue={reg.bibNumber || ""}
-                      onBlur={(e) => handleBibSave(reg.id, e.nativeEvent.text)}
-                      onSubmitEditing={(e) => handleBibSave(reg.id, e.nativeEvent.text)}
+                      onEndEditing={(e: NativeSyntheticEvent<TextInputEndEditingEventData>) =>
+                        handleBibSave(reg.id, e.nativeEvent.text)
+                      }
+                      onSubmitEditing={(e: NativeSyntheticEvent<TextInputEndEditingEventData>) =>
+                        handleBibSave(reg.id, e.nativeEvent.text)
+                      }
                       placeholder="Bib #"
                       placeholderTextColor="#64748b"
                       className="bg-slate-900 border border-slate-800 rounded-[2rem] px-4 py-2 text-slate-100 w-[120px] mr-3"
@@ -539,8 +543,12 @@ export default function DirectorDashboard() {
                       </View>
                       <TextInput
                         defaultValue={result.finishTime || ""}
-                        onBlur={(e) => handleResultSave(reg.userId, e.nativeEvent.text, result.official)}
-                        onSubmitEditing={(e) => handleResultSave(reg.userId, e.nativeEvent.text, result.official)}
+                        onEndEditing={(e: NativeSyntheticEvent<TextInputEndEditingEventData>) =>
+                          handleResultSave(reg.userId, e.nativeEvent.text, result.official)
+                        }
+                        onSubmitEditing={(e: NativeSyntheticEvent<TextInputEndEditingEventData>) =>
+                          handleResultSave(reg.userId, e.nativeEvent.text, result.official)
+                        }
                         placeholder="HH:MM:SS"
                         placeholderTextColor="#64748b"
                         className="bg-slate-900 border border-slate-800 rounded-[2rem] px-4 py-2 text-slate-100 w-[160px]"

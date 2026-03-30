@@ -25,9 +25,17 @@ if (!isExpoGo) {
     // Stripe not available
   }
 }
+/** Stripe hook is absent when the native module is not loaded (Expo Go). */
 const useStripeSafe = () => {
-  if (useStripe) return useStripe();
-  return { initPaymentSheet: async () => ({ error: { message: 'Stripe not available in Expo Go' } }), presentPaymentSheet: async () => ({ error: { message: 'Stripe not available in Expo Go' } }) };
+  if (!useStripe) {
+    return {
+      initPaymentSheet: async () => ({ error: { message: 'Stripe not available in Expo Go' } }),
+      presentPaymentSheet: async () => ({ error: { message: 'Stripe not available in Expo Go' } }),
+    };
+  }
+  // Hooks rule: useStripe exists only when @stripe/stripe-react-native loaded; stub above when not.
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- conditional native module, not conditional render branch
+  return useStripe();
 };
 import { Check, CreditCard, HeartPulse, ShieldCheck, Shirt, Trophy, User, X } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';

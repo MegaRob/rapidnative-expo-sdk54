@@ -312,6 +312,7 @@ const MemoizedBubble = React.memo((props: any & MemoizedBubbleProps) => {
     prevProps?.onRetryFailedMessage === nextProps?.onRetryFailedMessage
   );
 });
+MemoizedBubble.displayName = "MemoizedBubble";
 
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();

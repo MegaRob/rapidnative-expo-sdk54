@@ -452,7 +452,7 @@ export default function RootLayout() {
                       4. Liability
                     </Text>
                     <Text className="text-slate-200 mb-3">
-                      App is "As-Is". Developer is not responsible for bugs or data issues.
+                      {`App is "As-Is". Developer is not responsible for bugs or data issues.`}
                     </Text>
                     <Text className="text-emerald-300 font-semibold mb-1">
                       5. Termination

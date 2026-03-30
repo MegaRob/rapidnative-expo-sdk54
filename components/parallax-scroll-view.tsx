@@ -45,7 +45,7 @@ export default function ParallaxScrollView({
           ),
         },
       ],
-    };
+    } as import("react-native").ViewStyle;
   });
 
   return (
