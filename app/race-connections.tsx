@@ -2,7 +2,8 @@
 import { collection, documentId, getDocs, query, where } from 'firebase/firestore';
 import { ArrowLeft } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth, db } from '../src/firebaseConfig';
 import { useBlockedUsers } from '../hooks/useBlockedUsers';
@@ -131,7 +132,7 @@ export default function RaceConnectionsScreen() {
       {buddies.length === 0 ? (
         <Text style={styles.emptyText}>Be the first to match this trail and find a buddy!</Text>
       ) : (
-        <FlatList
+        <FlashList
           data={buddies}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => (

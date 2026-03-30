@@ -151,7 +151,7 @@ export default function OnboardingScreen() {
       friction: 10,
       useNativeDriver: false,
     }).start();
-  }, [currentIndex]);
+  }, [currentIndex, progressAnim]);
 
   // Find the first form slide index (for Skip button logic)
   const firstFormIndex = slides.findIndex(

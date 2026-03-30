@@ -5,7 +5,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { ArrowLeft } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import KeyboardScreen from './components/KeyboardScreen';
 import { auth, db, storage, updateProfile } from '../src/firebaseConfig';
 import { useCurrentUserProfile } from '../hooks/useCurrentUserProfile';
@@ -30,7 +30,6 @@ export default function ProfileEditScreen() {
   const [uploadingImage, setUploadingImage] = useState(false);
   const user = auth.currentUser;
   const { profile: mergedProfile, loading: profileLoading } = useCurrentUserProfile();
-  const insets = useSafeAreaInsets();
   const router = useRouter();
   const navigation = useNavigation();
 

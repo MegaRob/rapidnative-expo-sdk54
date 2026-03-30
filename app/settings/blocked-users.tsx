@@ -2,7 +2,8 @@ import { useNavigation, useRouter } from 'expo-router';
 import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { ArrowLeft } from 'lucide-react-native';
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Image, Pressable, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Text, TouchableOpacity, View } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth, db } from '../../src/firebaseConfig';
 import { unblockUser } from '../../utils/blockUtils';
@@ -150,7 +151,7 @@ export default function BlockedUsersScreen() {
             </Text>
           </View>
         ) : (
-          <FlatList
+          <FlashList
             data={blockedUsers}
             keyExtractor={(item) => item.id}
             contentContainerStyle={{ paddingBottom: 20 }}

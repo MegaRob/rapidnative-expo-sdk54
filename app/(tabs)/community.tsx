@@ -1,15 +1,14 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
-  Pressable,
   Alert,
   Keyboard,
 } from "react-native";
 import { BottomSheetTextInput } from "@gorhom/bottom-sheet";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { ArrowLeft, Plus, Car, Users, Info } from "lucide-react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
@@ -68,7 +67,6 @@ const formatTimestamp = (value: any) => {
 
 export default function RaceCommunityHub() {
   const router = useRouter();
-  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams();
   const trailId = Array.isArray(params?.trailId) ? params.trailId[0] : params?.trailId;
   const trailName = Array.isArray(params?.trailName) ? params.trailName[0] : params?.trailName;

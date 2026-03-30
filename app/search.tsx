@@ -19,16 +19,15 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Keyboard,
-  Pressable,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import KeyboardScreen from './components/KeyboardScreen';
-import { auth, db } from '../src/firebaseConfig';
+import { db } from '../src/firebaseConfig';
 
 interface SearchResult {
   id: string;
@@ -89,7 +88,6 @@ const formatDate = (value: any): string => {
 export default function SearchScreen() {
   const router = useRouter();
   const navigation = useNavigation();
-  const insets = useSafeAreaInsets();
   const [searchQuery, setSearchQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [allRaces, setAllRaces] = useState<SearchResult[]>([]);

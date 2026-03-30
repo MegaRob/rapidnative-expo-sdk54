@@ -6,6 +6,8 @@
  * finished `registerAuth()`, which causes: "Component auth has not been registered yet".
  * Firestore and Storage are required only after `initializeAuth` succeeds.
  */
+/* Side-effect + named `@firebase/auth` imports must stay separate (registerAuth ordering). */
+/* eslint-disable import/no-duplicates */
 import "@firebase/auth";
 
 import type { FirebaseApp } from "@firebase/app";
@@ -24,7 +26,10 @@ import {
   signOut,
   updateProfile,
 } from "@firebase/auth";
+/* eslint-enable import/no-duplicates */
 import ReactNativeAsyncStorage from "@react-native-async-storage/async-storage";
+
+import { initAppCheckAfterFirebase } from "./initAppCheck";
 
 /** From Firebase Console → Project settings → Your apps (Web). */
 const firebaseConfig = {
@@ -84,12 +89,9 @@ function setDummyFirebaseExports() {
 setDummyFirebaseExports();
 
 function wireFirestoreAndStorage(firebaseApp: FirebaseApp) {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { getFirestore } =
-    require("@firebase/firestore") as typeof import("@firebase/firestore");
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { getStorage } =
-    require("@firebase/storage") as typeof import("@firebase/storage");
+  // Defer Firestore/Storage until after Auth init (see file header). Sync `require` keeps load order.
+  const { getFirestore } = require("@firebase/firestore") as typeof import("@firebase/firestore"); // eslint-disable-line @typescript-eslint/no-require-imports
+  const { getStorage } = require("@firebase/storage") as typeof import("@firebase/storage"); // eslint-disable-line @typescript-eslint/no-require-imports
   db = getFirestore(firebaseApp);
   storage = getStorage(firebaseApp);
 }
@@ -107,11 +109,13 @@ try {
     auth = initAuthForApp(app);
     wireFirestoreAndStorage(app);
     isFirebaseReady = true;
+    initAppCheckAfterFirebase(app);
   } else {
     app = initializeApp(firebaseConfig);
     auth = initAuthForApp(app);
     wireFirestoreAndStorage(app);
     isFirebaseReady = true;
+    initAppCheckAfterFirebase(app);
   }
 } catch (error: unknown) {
   const message = error instanceof Error ? error.message : String(error);

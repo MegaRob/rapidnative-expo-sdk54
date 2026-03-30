@@ -967,6 +967,7 @@ export default function ChatScreen() {
       await setDoc(chatDocRef, {
         userIds: [user.uid, otherUserId],
         lastMessageAt: Timestamp.now(),
+        lastMessageSenderId: currentUserId,
       }, { merge: true });
     } catch (error) {
       setMessages((prev) =>
@@ -1056,6 +1057,7 @@ export default function ChatScreen() {
           {
             userIds: [user.uid, otherUserId],
             lastMessageAt: Timestamp.now(),
+            lastMessageSenderId: user.uid,
           },
           { merge: true }
         );

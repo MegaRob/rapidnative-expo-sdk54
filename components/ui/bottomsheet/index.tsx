@@ -7,7 +7,7 @@ import GorhomBottomSheet, {
   BottomSheetFlatList as GorhomBottomSheetFlatList,
   BottomSheetSectionList as GorhomBottomSheetSectionList,
 } from '@gorhom/bottom-sheet';
-import { Platform } from 'react-native';
+import { Platform , Pressable, Text } from 'react-native';
 import type { PressableProps, TextProps } from 'react-native';
 import { FocusScope } from '@gluestack-ui/utils/aria';
 import React, {
@@ -18,7 +18,6 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { Pressable, Text } from 'react-native';
 import { cssInterop } from 'nativewind';
 import { tva } from '@gluestack-ui/utils/nativewind-utils';
 

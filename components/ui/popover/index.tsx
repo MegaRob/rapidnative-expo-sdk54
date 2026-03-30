@@ -8,8 +8,7 @@ import {
   MotionComponentProps,
 } from '@legendapp/motion';
 import { createPopover } from '@gluestack-ui/core/popover/creator';
-import { tva } from '@gluestack-ui/utils/nativewind-utils';
-import {
+import { tva ,
   withStyleContext,
   useStyleContext,
 } from '@gluestack-ui/utils/nativewind-utils';

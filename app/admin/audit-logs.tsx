@@ -14,13 +14,13 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
   Modal,
   Platform,
   Pressable,
   Text,
   View,
 } from "react-native";
+import { FlashList } from "@shopify/flash-list";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   Toast,
@@ -402,7 +402,7 @@ export default function AdminAuditLogsScreen() {
         </Text>
       </View>
 
-      <FlatList
+      <FlashList
         data={entries}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}

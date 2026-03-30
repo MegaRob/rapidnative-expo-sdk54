@@ -605,6 +605,17 @@ exports.onNewMessageUpdateUnread = functions.firestore
     if (!recipientSnap.exists) return null;
 
     await recipientRef.update({ hasUnreadMessages: true });
+
+    await db
+      .collection("chats")
+      .doc(chatId)
+      .set(
+        {
+          lastMessageAt: admin.firestore.FieldValue.serverTimestamp(),
+          lastMessageSenderId: senderId,
+        },
+        { merge: true }
+      );
     return null;
   });
 

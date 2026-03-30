@@ -2,8 +2,9 @@ import { useNavigation, useRouter } from 'expo-router';
 import { arrayRemove, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, Timestamp, updateDoc, where } from "firebase/firestore";
 import { ArrowLeft, Calendar, Clock, MapPin, Pin, Trophy, X } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, AppState, FlatList, Image, InteractionManager, LayoutAnimation, Linking, Pressable, Text, TouchableOpacity, View } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Alert, AppState, Image, InteractionManager, LayoutAnimation, Linking, Pressable, Text, TouchableOpacity, View } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth, db } from '../src/firebaseConfig';
 import DistancePickerModal, { DistanceOption, DistancePickerModalHandle } from './components/DistancePickerModal';
 import RegistrationForm from './components/RegistrationForm';
@@ -542,13 +543,11 @@ const EmptyState = ({
 export default function SavedRacesScreen() {
   const router = useRouter();
   const navigation = useNavigation();
-  const insets = useSafeAreaInsets();
   const [selectedTab, setSelectedTab] = useState<TabType>('Liked');
   const [likedRaces, setLikedRaces] = useState<Race[]>([]);
   const [registeredRaces, setRegisteredRaces] = useState<Registration[]>([]);
   const [completedRaces, setCompletedRaces] = useState<CompletedRace[]>([]);
   const [loading, setLoading] = useState(true);
-  const [trailCache, setTrailCache] = useState<Map<string, any>>(new Map());
   const [showRegistrationModal, setShowRegistrationModal] = useState(false);
   const distancePickerRef = useRef<DistancePickerModalHandle>(null);
   const [activeRegistrationRace, setActiveRegistrationRace] = useState<Race | null>(null);
@@ -652,7 +651,6 @@ export default function SavedRacesScreen() {
             }
           }
         });
-        setTrailCache(newCache);
 
         // Process Liked Races
         const likedRacesList: Race[] = [];
@@ -1108,11 +1106,8 @@ export default function SavedRacesScreen() {
       
       {/* Races List */}
       <View className="flex-1 px-4">
-        <FlatList
+        <FlashList
           data={currentRaces}
-          removeClippedSubviews={true}
-          maxToRenderPerBatch={10}
-          windowSize={10}
           keyExtractor={(item, index) => {
             // Use unique identifiers based on tab type
             if (selectedTab === 'Registered' && 'registrationId' in item) {

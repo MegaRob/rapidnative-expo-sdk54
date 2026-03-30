@@ -7,7 +7,6 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  Dimensions,
   Text,
   TextInput,
   TouchableOpacity,
@@ -16,8 +15,6 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import KeyboardScreen from './components/KeyboardScreen';
 import { auth, createUserWithEmailAndPassword, db } from "@/src/firebaseConfig";
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function SignUpScreen() {
   const [email, setEmail] = useState('');
@@ -52,7 +49,7 @@ export default function SignUpScreen() {
         }),
       ]),
     ]).start();
-  }, []);
+  }, [formOpacity, formTranslateY, logoScale]);
 
   const handleSignUp = async () => {
     if (!email || !password || !confirmPassword) {

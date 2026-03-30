@@ -8,7 +8,8 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "lint:ci": "expo lint --quiet && tsc --noEmit"
   },
   "dependencies": {
     "@expo/html-elements": "0.12.5",

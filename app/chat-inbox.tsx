@@ -2,9 +2,11 @@ import { useFocusEffect, useNavigation, useRouter } from 'expo-router';
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, updateDoc, where } from 'firebase/firestore';
 import { ArrowLeft } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, InteractionManager, Pressable, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Image, InteractionManager, Pressable, Text, TouchableOpacity, View } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth, db, isFirebaseReady, onAuthStateChanged } from '../src/firebaseConfig';
+import { computeInboxUnread } from '../utils/chatInboxUnread';
 import { fetchPeerDisplayForInbox } from '../utils/userProfile';
 
 // Helper to create a unique chat ID
@@ -54,6 +56,7 @@ interface Buddy {
   lastMessageTime?: Date | null;
   raceName?: string; // The name of the race/trail that connects this user
   chatId: string; // The chat document ID
+  hasUnread: boolean;
 }
 
 // Define a type for grouped chats
@@ -84,7 +87,7 @@ export default function ChatInboxScreen() {
       setAuthUid(u?.uid ?? null);
     });
     return () => unsub();
-  }, [isFirebaseReady]);
+  }, []);
 
   // Hide the default header (removes "(tabs)" back label and "chat-inbox" title)
   useEffect(() => {
@@ -230,7 +233,7 @@ export default function ChatInboxScreen() {
             if (trailDoc.exists()) {
               return { trailId, name: trailDoc.data().name || 'Unknown Race' };
             }
-          } catch (error) { /* skip */ }
+          } catch { /* skip */ }
           return { trailId, name: 'Unknown Race' };
         });
 
@@ -239,9 +242,22 @@ export default function ChatInboxScreen() {
           try {
             const data = await fetchPeerDisplayForInbox(buddyId);
             if (data) return { buddyId, data };
-          } catch (error) { /* skip */ }
+          } catch { /* skip */ }
           return { buddyId, data: null };
         });
+
+        const fetchLastMessageSenderId = async (chatId: string): Promise<string | undefined> => {
+          try {
+            const messagesRef = collection(db, "chats", chatId, "messages");
+            const messagesQuery = query(messagesRef, orderBy("createdAt", "desc"), limit(1));
+            const messagesSnapshot = await getDocs(messagesQuery);
+            if (messagesSnapshot.empty) return undefined;
+            const uid = messagesSnapshot.docs[0].data().userId;
+            return typeof uid === "string" && uid.length > 0 ? uid : undefined;
+          } catch {
+            return undefined;
+          }
+        };
 
         // Last message time — prefer lastMessageAt on chat doc (fast), fall back to subcollection query
         const lastMessagePromises = userChats.map(async ({ chatDoc }) => {
@@ -256,7 +272,20 @@ export default function ChatInboxScreen() {
               : rawLast.seconds != null
                 ? new Date(rawLast.seconds * 1000)
                 : null;
-            if (lastMessageTime) return { chatId: chatDoc.id, lastMessageTime };
+            if (lastMessageTime) {
+              let lastMessageSenderId =
+                typeof chatData.lastMessageSenderId === "string"
+                  ? chatData.lastMessageSenderId
+                  : undefined;
+              if (!lastMessageSenderId) {
+                lastMessageSenderId = await fetchLastMessageSenderId(chatDoc.id);
+              }
+              return {
+                chatId: chatDoc.id,
+                lastMessageTime,
+                lastMessageSenderId,
+              };
+            }
           }
           // Slow fallback: query messages subcollection (only for old chats without lastMessageAt)
           try {
@@ -273,10 +302,17 @@ export default function ChatInboxScreen() {
                   lastMessageTime = new Date(lastMessage.createdAt.seconds * 1000);
                 }
               }
-              return { chatId: chatDoc.id, lastMessageTime };
+              const uid = lastMessage.userId;
+              const lastMessageSenderId =
+                typeof uid === "string" && uid.length > 0 ? uid : undefined;
+              return { chatId: chatDoc.id, lastMessageTime, lastMessageSenderId };
             }
-          } catch (error) { /* no messages yet */ }
-          return { chatId: chatDoc.id, lastMessageTime: null as Date | null };
+          } catch { /* no messages yet */ }
+          return {
+            chatId: chatDoc.id,
+            lastMessageTime: null as Date | null,
+            lastMessageSenderId: undefined as string | undefined,
+          };
         });
 
         // Fire ALL three groups of fetches simultaneously
@@ -296,7 +332,11 @@ export default function ChatInboxScreen() {
         buddyProfileResults.forEach(r => { if (r.data) buddyProfileMap.set(r.buddyId, r.data); });
 
         const lastMessageMap = new Map<string, Date | null>();
-        lastMessageResults.forEach(r => lastMessageMap.set(r.chatId, r.lastMessageTime));
+        const lastMessageSenderFallback = new Map<string, string | undefined>();
+        lastMessageResults.forEach((r) => {
+          lastMessageMap.set(r.chatId, r.lastMessageTime);
+          if (r.lastMessageSenderId) lastMessageSenderFallback.set(r.chatId, r.lastMessageSenderId);
+        });
 
         // 7. Assemble enriched chat list (no more network calls needed)
         const enrichedChats: Buddy[] = [];
@@ -320,6 +360,12 @@ export default function ChatInboxScreen() {
               ? trailNamesMap.get(trailId)!
               : "Unknown Race";
 
+          const hasUnread = computeInboxUnread({
+            chatData,
+            myUid: user.uid,
+            lastMessageSenderIdFallback: lastMessageSenderFallback.get(chatDoc.id),
+          });
+
           enrichedChats.push({
             id: otherUserId,
             username: displayName,
@@ -331,6 +377,7 @@ export default function ChatInboxScreen() {
             lastMessageTime: lastMessageMap.get(chatDoc.id) || null,
             raceName,
             chatId: chatDoc.id,
+            hasUnread,
           });
         }
 
@@ -375,13 +422,13 @@ export default function ChatInboxScreen() {
       } finally {
         setLoading(false);
       }
-    }, [isFirebaseReady]);
+    }, []);
 
   // Refetch when auth becomes available (useFocusEffect alone may not re-run until next blur/focus).
   useEffect(() => {
     if (!isFirebaseReady || !authUid) return;
     fetchAllBuddies();
-  }, [authUid, isFirebaseReady, fetchAllBuddies]);
+  }, [authUid, fetchAllBuddies]);
 
   // On focus (including first mount): clear global unread badge, then refresh list.
   useFocusEffect(
@@ -396,7 +443,7 @@ export default function ChatInboxScreen() {
         fetchAllBuddies();
       });
       return () => task.cancel();
-    }, [fetchAllBuddies, isFirebaseReady])
+    }, [fetchAllBuddies])
   );
 
   // --- Render Logic ---
@@ -428,7 +475,7 @@ export default function ChatInboxScreen() {
         {orderedRaceSections.length === 0 ? (
           <Text className="text-base text-gray-400 text-center mt-12">No chats found yet. Start a conversation!</Text>
         ) : (
-          <FlatList
+          <FlashList
             data={orderedRaceSections}
             keyExtractor={([raceName]) => raceName}
             contentContainerStyle={{ paddingBottom: 20 }}
@@ -441,7 +488,6 @@ export default function ChatInboxScreen() {
                   
                   {/* List of chats for this race */}
                   {buddies.map((buddy) => {
-                    const hasUnread = false; // TODO: Replace with actual unread count logic
                     const displayName = (buddy.username && buddy.username.trim() !== '' && buddy.username !== 'NewUser') 
                       ? buddy.username 
                       : 'Runner';
@@ -481,11 +527,9 @@ export default function ChatInboxScreen() {
                           ) : (
                             <Text className="text-gray-400 text-xs mb-1">New</Text>
                           )}
-                          {/* Unread badge */}
-                          {hasUnread && (
-                            <View className="bg-green-500 rounded-full w-5 h-5 items-center justify-center">
-                              <Text className="text-white text-xs font-bold">2</Text>
-                            </View>
+                          {/* Unread indicator */}
+                          {buddy.hasUnread && (
+                            <View className="bg-emerald-400 rounded-full w-2.5 h-2.5" />
                           )}
                         </View>
                       </Pressable>
@@ -500,3 +544,4 @@ export default function ChatInboxScreen() {
     </SafeAreaView>
   );
 }
+

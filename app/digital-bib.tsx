@@ -62,7 +62,6 @@ export default function DigitalBibScreen() {
   const raceName = getParam(params.raceName, 'Race');
   const runnerName = getParam(params.runnerName, 'Runner');
   const distance = getParam(params.distance, '');
-  const shirtSize = getParam(params.shirtSize, '');
   const startTime = getParam(params.startTime, '');
   const trailId = getParam(params.trailId);
 
